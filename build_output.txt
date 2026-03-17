@@ -1,0 +1,36 @@
+[36mvite v8.0.0 [32mbuilding client environment for production...[36m[39m
+[2Ktransforming...✓ 1748 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.45 kB │ gzip:  0.29 kB
+dist/assets/index-9Fgh5d45.css    2.66 kB │ gzip:  1.03 kB
+dist/assets/index-BlgmwVi2.js   225.20 kB │ gzip: 69.77 kB
+
+
+
+[31m✗[39m Build failed in 316ms
+[31merror during build:
+[31mBuild failed with 1 error:
+
+Error: [vite]: Rolldown failed to resolve import "react-router-dom" from "C:/Users/Sarika Srivastava/Downloads/FRAMS/src/App.jsx".
+This is most likely unintended because it can break your application at runtime.
+If you do want to externalize this module explicitly add it to
+`build.rollupOptions.external`
+    at viteLog (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32887:57)
+    at file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32923:71
+    at onwarn (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/@vitejs/plugin-react/dist/index.js:40:7)
+    at file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32923:28
+    at onRollupLog (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32918:63)
+    at onLog (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32688:4)
+    at file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/rolldown-build-4YnQkA76.mjs:49:26
+    at logger (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/rolldown-build-4YnQkA76.mjs:40:3)
+    at onLog (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/bindingify-input-options-Cu7pt6SZ.mjs:1945:32)[31m
+    at aggregateBindingErrorsIntoJsError (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/error-CP8smW_P.mjs:48:18)
+    at unwrapBindingResult (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/error-CP8smW_P.mjs:18:128)
+    at #build (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/rolldown/dist/shared/rolldown-build-4YnQkA76.mjs:3311:34)
+    at async buildEnvironment (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:32794:64)
+    at async Object.build (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:33216:19)
+    at async Object.buildApp (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/chunks/node.js:33213:153)
+    at async CAC.<anonymous> (file:///C:/Users/Sarika%20Srivastava/Downloads/FRAMS/node_modules/vite/dist/node/cli.js:778:3) {
+  errors: [Getter/Setter]
+}[39m
