@@ -1,0 +1,24 @@
+{
+  "name": "anima",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ANIMA — The Intelligence of Who You Are. An AI Digital Identity Intelligence Platform.",
+  "workspaces": [
+    "packages/*",
+    "services/api",
+    "services/web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace @anima/api",
+    "dev:web": "npm run dev --workspace @anima/web",
+    "dev:trust": "cd services/trust && uvicorn app.main:app --reload --port 8090",
+    "build": "npm run build --workspace @anima/api && npm run build --workspace @anima/web",
+    "typecheck": "npm run typecheck --workspace @anima/api && npm run typecheck --workspace @anima/web",
+    "test": "npm run test --workspace @anima/api && npm run test --workspace @anima/web",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down"
+  }
+}

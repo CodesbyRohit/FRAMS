@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-950 text-slate-200 antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.45);
+  color: #fff;
+}
+
+/* Slim, themed scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.35);
+  border-radius: 999px;
+}
+
+@layer components {
+  .glass {
+    @apply rounded-2xl border border-white/10 bg-white/[0.03] shadow-glass backdrop-blur-xl;
+  }
+  .glass-hover {
+    @apply transition-all duration-300 hover:border-aurora-violet/40 hover:bg-white/[0.05] hover:shadow-glow;
+  }
+  .text-gradient {
+    @apply bg-gradient-to-r from-aurora-violet via-aurora-indigo to-aurora-cyan bg-clip-text text-transparent;
+  }
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-aurora-violet/70 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
+  }
+  .btn-primary {
+    @apply focus-ring relative inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-aurora-violet to-aurora-indigo px-5 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply focus-ring inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-medium text-slate-200 transition-all duration-200 hover:border-white/20 hover:bg-white/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .input-dark {
+    @apply focus-ring w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 transition-colors focus:border-aurora-violet/50;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-300;
+  }
+}
+
+/* Aurora backdrop used across the app */
+.aurora-bg {
+  background:
+    radial-gradient(900px 480px at 15% -5%, rgba(139, 92, 246, 0.16), transparent 60%),
+    radial-gradient(800px 420px at 95% 5%, rgba(34, 211, 238, 0.10), transparent 55%),
+    radial-gradient(700px 500px at 50% 110%, rgba(99, 102, 241, 0.12), transparent 60%),
+    #05060a;
+}
+
+/* Subtle grid overlay for hero sections */
+.grid-overlay {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);
+}
+
+/* Live indicator dots */
+.live-dot {
+  @apply relative inline-block h-2 w-2 rounded-full bg-emerald-400;
+}
+.live-dot::after {
+  content: '';
+  @apply absolute inset-0 animate-ping rounded-full bg-emerald-400/60;
+}
