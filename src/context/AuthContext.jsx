@@ -1,92 +1,66 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
-
-const AuthContext = createContext(null);
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import api, { readSession, SESSION_EXPIRED_EVENT, SESSION_KEY } from '../services/api';
+import { AuthContext } from './auth';
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [session, setSession] = useState(() => readSession());
+  const [status, setStatus] = useState(() => (readSession() ? 'checking' : 'signed-out'));
+  const [notice, setNotice] = useState(null);
 
-  useEffect(() => {
-    const hydrateSession = async () => {
-      try {
-        const savedUser = localStorage.getItem('framsUser');
-        if (savedUser) {
-          const parsed = JSON.parse(savedUser);
-          // Defensive check: Ensure parsed object has essential fields
-          if (parsed && parsed.token) {
-            setUser(parsed);
-          } else {
-            throw new Error('Malformed session data');
-          }
-        }
-      } catch (error) {
-        console.error('A.R.I.A. -> SESSION HYDRATION FAILED:', error);
-        localStorage.removeItem('framsUser');
-        setUser(null);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    hydrateSession();
+  const clear = useCallback((message = null) => {
+    localStorage.removeItem(SESSION_KEY);
+    setSession(null);
+    setStatus('signed-out');
+    setNotice(message);
   }, []);
 
-  const login = async (role, password) => {
-    try {
-      // For F.R.A.M.S, the 'role' is used as the login identifier since we use role-based passwords
-      const email = `${role.toLowerCase()}@frams.edu`; 
-      
-      const { data } = await api.post('/auth/login', {
-        email,
-        password,
-        role: role.toLowerCase()
+  // Validate a stored session with the server instead of trusting localStorage.
+  useEffect(() => {
+    localStorage.removeItem('framsUser'); // pre-2.0 session format (could hold fake tokens)
+    if (!readSession()) return;
+    let cancelled = false;
+    api.get('/auth/profile')
+      .then(({ data }) => {
+        if (cancelled) return;
+        const next = { ...readSession(), user: data };
+        localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+        setSession(next);
+        setStatus('signed-in');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err.response?.status === 401) clear('Your session expired. Please sign in again.');
+        else setStatus('signed-in'); // server unreachable: keep session, pages show their own errors
       });
+    return () => { cancelled = true; };
+  }, [clear]);
 
-      // Robust Response Parsing: Always ensure a user object exists
-      const userData = {
-        _id: data?.user?.id || data?.user?._id || data?.id || `demo_${role}_${Date.now()}`,
-        username: data?.user?.username || data?.user?.name || data?.username || data?.name || role.charAt(0).toUpperCase() + role.slice(1),
-        role: data?.user?.role || data?.role || role || 'guest',
-        isAuthenticated: true,
-        token: data?.token || 'offline_bypass_token',
-        avatar: (data?.user?.username || data?.user?.name || role || 'P').charAt(0).toUpperCase()
-      };
+  useEffect(() => {
+    const onExpired = () => clear('Your session expired. Please sign in again.');
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, [clear]);
 
-      setUser(userData);
-      localStorage.setItem('framsUser', JSON.stringify(userData));
-      return { success: true };
-    } catch (error) {
-      console.error('Login error:', error);
-      return { 
-        success: false, 
-        message: error.response?.data?.message || 'Invalid credentials' 
-      };
-    }
-  };
+  const login = useCallback(async (email, password) => {
+    const { data } = await api.post('/auth/login', { email, password });
+    const next = { token: data.token, user: data.user };
+    localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    setSession(next);
+    setStatus('signed-in');
+    setNotice(null);
+    return data.user;
+  }, []);
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('framsUser');
-  };
+  const logout = useCallback(() => clear(null), [clear]);
 
-  return (
-    <AuthContext.Provider value={{ 
-      user: user || { role: 'guest', username: 'Personnel', avatar: 'P' }, 
-      login, 
-      logout, 
-      isLoading, 
-      isAuthenticated: !!user?.token 
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
+  const value = useMemo(() => ({
+    user: session?.user ?? null,
+    status,
+    isAuthenticated: Boolean(session),
+    notice,
+    login,
+    logout,
+  }), [session, status, notice, login, logout]);
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

@@ -9,6 +9,7 @@
     "dev:full": "concurrently \"npm run dev\" \"npm run server\"",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "node --test \"src/**/*.test.js\" && npm --prefix server test",
     "preview": "vite preview"
   },
   "dependencies": {

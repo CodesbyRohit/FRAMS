@@ -1,89 +1,40 @@
 import React from 'react';
+import { XCircle } from 'lucide-react';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { error: null };
   }
 
   static getDerivedStateFromError(error) {
-    return { hasError: true };
+    return { error };
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error("Uncaught error:", error, errorInfo);
+    console.error('Uncaught UI error:', error, errorInfo);
   }
 
   render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ 
-          display: 'flex', 
-          flexDirection: 'column', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
-          minHeight: '100vh', 
-          padding: '2rem', 
-          textAlign: 'center',
-          background: 'var(--bg-main)',
-          color: 'var(--text-main)',
-          fontFamily: 'var(--hud-font)'
-        }}>
-          <div className="glow-red" style={{ 
-            padding: '2.5rem', 
-            borderRadius: '4px', 
-            border: '2px solid var(--stark-red)', 
-            backgroundColor: 'rgba(239, 68, 68, 0.05)',
-            maxWidth: '600px',
-            position: 'relative'
-          }}>
-            <div style={{ 
-              position: 'absolute', 
-              top: '-15px', 
-              left: '20px', 
-              background: 'var(--bg-main)', 
-              padding: '0 10px',
-              color: 'var(--stark-red)',
-              fontSize: '0.75rem',
-              fontWeight: 800,
-              letterSpacing: '2px'
-            }}>
-              SYSTEM.ANOMALY_DETECTED
-            </div>
-            
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'white', marginBottom: '1rem', letterSpacing: '1px' }}>
-              CRITICAL RENDERING INTERRUPT
-            </h2>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '2rem', lineHeight: '1.6', fontSize: '0.875rem' }}>
-              The UI core encountered an unhandled exception during the component hydration cycle. F.R.A.M.S is currently operating in safe-mode.
-            </p>
-            
-            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-              <button
-                onClick={() => window.location.reload()}
-                className="action-btn"
-                style={{ backgroundColor: 'var(--stark-red)', border: 'none', color: 'white' }}
-              >
-                REINITIALIZE_SYSTEM
-              </button>
-              <button
-                onClick={() => { localStorage.clear(); window.location.reload(); }}
-                className="action-btn"
-                style={{ backgroundColor: 'transparent', border: '1px solid var(--stark-red)', color: 'var(--stark-red)' }}
-              >
-                PURGE_SESSION_&_REBOOT
-              </button>
-            </div>
-          </div>
-          
-          <div style={{ marginTop: '2rem', fontSize: '0.65rem', color: 'rgba(255,255,255,0.2)', letterSpacing: '1px' }}>
-            A.R.I.A. CORE STABILITY: DEGRADED // ERROR_CODE: {Math.random().toString(16).slice(2, 8).toUpperCase()}
+    if (!this.state.error) return this.props.children;
+    const chunkFailed = /dynamically imported module|Loading chunk/i.test(this.state.error?.message || '');
+    return (
+      <div className="center-screen">
+        <div className="card card-pad" style={{ maxWidth: 460 }} role="alert">
+          <div className="empty-icon" style={{ color: 'var(--danger)', marginBottom: 16 }}><XCircle size={18} aria-hidden="true" /></div>
+          <h1 style={{ fontSize: 'var(--text-xl)' }}>This screen failed to load</h1>
+          <p className="page-desc" style={{ marginTop: 8 }}>
+            {chunkFailed
+              ? 'Part of the app could not be downloaded — usually a network hiccup or a new version was just deployed.'
+              : 'An unexpected error stopped this screen from rendering. No attendance data was changed.'}
+          </p>
+          <div className="row" style={{ marginTop: 20 }}>
+            <button className="btn btn-primary" onClick={() => window.location.reload()}>Reload</button>
+            <a className="btn" href="/home">Go to home</a>
           </div>
         </div>
-      );
-    }
-
-    return this.props.children;
+      </div>
+    );
   }
 }
 

@@ -1,21 +1,13 @@
-import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { homePathFor, useAuth } from '../context/auth';
 
+// UX only. Every route below is also enforced by the server.
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const { user, isAuthenticated } = useAuth();
   const location = useLocation();
 
-  if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
-
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    // Redirect to their respective dashboard if they try to access unauthorized role-specific route
-    const redirectPath = user.role === 'student' ? '/student-dashboard' : '/';
-    return <Navigate to={redirectPath} replace />;
-  }
-
+  if (!isAuthenticated) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (allowedRoles && !allowedRoles.includes(user.role)) return <Navigate to={homePathFor(user.role)} replace />;
   return children;
 };
 

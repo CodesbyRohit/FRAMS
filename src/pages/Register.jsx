@@ -1,266 +1,193 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Camera, Save, User as UserIcon, Mail, Lock, ShieldCheck, FileText } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { faceService } from '../services/faceService';
+import { ArrowLeft, Camera, CameraOff, Copy, RefreshCw, ScanFace, UserPlus } from 'lucide-react';
 import api from '../services/api';
+import { faceService } from '../services/faceService';
+import { CAMERA_ERRORS, classifyCameraError, measureBrightness, openCamera, stopStream } from '../lib/camera';
+import { qualityIssue } from '../lib/liveness';
+import { errorMessage } from '../lib/format';
+import { Card, Field, Notice, PageHeader } from '../ui';
 
-const Register = () => {
+const EMPTY = { name: '', email: '', password: '', role: 'student', department: '', researchPapers: '' };
+const SNAPSHOT_WIDTH = 480;
+
+export default function Enroll() {
   const videoRef = useRef(null);
-  const [stream, setStream] = useState(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    password: '',
-    role: 'student',
-    department: '',
-    researchPapers: ''
-  });
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const probeRef = useRef(null);
+  const streamRef = useRef(null);
+  const [form, setForm] = useState(EMPTY);
+  const [camera, setCamera] = useState({ state: 'off' }); // off | starting | on | error
+  const [capture, setCapture] = useState(null); // { descriptor, image }
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [created, setCreated] = useState(null);
 
-  useEffect(() => {
-    startVideo();
-    faceService.loadModels().then(() => setModelsLoaded(true));
-    return () => stopVideo();
-  }, []);
+  useEffect(() => () => stopStream(streamRef.current), []);
 
-  const startVideo = async () => {
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const startCamera = async () => {
+    setCamera({ state: 'starting' });
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
-      setStream(mediaStream);
+      await faceService.loadModels();
+      const stream = await openCamera();
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      setCamera({ state: 'on' });
     } catch (err) {
-      toast.error('Failed to access webcam. Please allow permissions.');
+      const kind = err?.name ? classifyCameraError(err) : 'unknown';
+      setCamera({ state: 'error', ...(err?.name || err?.message === 'unsupported' ? CAMERA_ERRORS[kind] : { title: 'Face models failed to load', text: 'Check that /models is served and try again.' }) });
     }
   };
 
-  const stopVideo = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-    }
+  const stopCamera = () => {
+    stopStream(streamRef.current);
+    streamRef.current = null;
+    setCamera({ state: 'off' });
   };
 
-  const handleCapture = async (e) => {
-    e.preventDefault();
-    if (!modelsLoaded) {
-      toast.error('Face recognition models are still loading. Please wait.');
-      return;
-    }
-    if (!formData.name || !formData.department) {
-      toast.error('Please fill in Name and Department');
-      return;
-    }
-
-    setIsCapturing(true);
-    const id = toast.loading('Detecting face...');
-
+  const takeCapture = async () => {
+    setBusy('capture');
+    setError(null);
     try {
-      const detection = await faceService.detectSingleFace(videoRef.current);
-      
-      if (!detection) {
-        toast.error('No face detected. Please face the camera clearly.', { id });
-        setIsCapturing(false);
+      const video = videoRef.current;
+      const detections = await faceService.detectAllFaces(video);
+      const issue = qualityIssue({
+        faceCount: detections.length,
+        faceWidth: detections[0]?.detection.box.width,
+        frameWidth: video.videoWidth,
+        brightness: measureBrightness(video, probeRef.current),
+      });
+      if (issue) {
+        setError(issue.text);
         return;
       }
-
-      // Capture snapshot
       const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const snapshot = canvas.toDataURL('image/jpeg');
-
-      // Prepare user data for backend
-      const userData = {
-        name: formData.name,
-        email: formData.email,
-        password: formData.password,
-        role: formData.role.toLowerCase(),
-        department: formData.department,
-        researchPapers: formData.researchPapers,
-        faceDescriptor: Array.from(detection.descriptor),
-        faceImage: snapshot
-      };
-
-      await api.post('/users', userData);
-      toast.success('User registered successfully!', { id });
-      
-      setFormData({ 
-        name: '', 
-        email: '', 
-        password: '', 
-        role: 'student', 
-        department: '', 
-        researchPapers: '' 
-      });
-      
+      canvas.width = SNAPSHOT_WIDTH;
+      canvas.height = Math.round((video.videoHeight / video.videoWidth) * SNAPSHOT_WIDTH);
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      setCapture({ descriptor: Array.from(detections[0].descriptor), image: canvas.toDataURL('image/jpeg', 0.85) });
+      stopCamera();
     } catch (err) {
-      console.error('Registration error:', err);
-      toast.error(err.response?.data?.message || 'Error during registration', { id });
+      setError(errorMessage(err, 'Face capture failed'));
     } finally {
-      setIsCapturing(false);
+      setBusy(null);
     }
   };
 
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy('save');
+    setError(null);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        email: form.email.trim() || undefined,
+        password: form.password || undefined,
+        role: form.role,
+        department: form.department.trim() || undefined,
+        researchPapers: form.role === 'student' ? undefined : form.researchPapers || undefined,
+        ...(capture ? { faceDescriptor: capture.descriptor, faceImage: capture.image } : {}),
+      };
+      const { data } = await api.post('/users', payload);
+      setCreated(data);
+      setForm(EMPTY);
+      setCapture(null);
+      setConsent(false);
+      toast.success(`${data.name} added`);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not create the account'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const canSave = form.name.trim() && (!capture || consent) && !busy;
+
   return (
-    <div className="animate-fade-in" style={{ display: 'grid', gridTemplateColumns: 'minmax(400px, 1fr) 1fr', gap: '3rem' }}>
-      <div>
-        <h1 className="text-glow-arc" style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
-           Personnel Onboarding
-        </h1>
-        <p style={{ color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '2px', fontFamily: 'var(--hud-font)', marginBottom: '2rem' }}>
-           SYSTEM.REGISTRY // NEW_ENTRY_PROTOCOLS
-        </p>
-        
-        <form onSubmit={handleCapture} className="glow-low" style={{ background: 'var(--bg-card)', padding: '2rem', borderRadius: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', border: '1px solid var(--border-color)', position: 'relative', overflow: 'hidden' }}>
-          <div style={{ position: 'absolute', top: 0, right: 0, opacity: 0.05, pointerEvents: 'none' }}>
-             <FileText size={120} />
-          </div>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-              <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>IDENT_NAME</label>
-              <div className="input-wrapper" style={{ position: 'relative' }}>
-                <UserIcon style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--accent-blue)' }} size={16} />
-                <input 
-                  type="text" 
-                  className="glass-input" 
-                  style={{ width: '100%', paddingLeft: '2.5rem', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', color: 'white', outline: 'none' }}
-                  required
-                  placeholder="NAME_REQUIRED"
-                  value={formData.name}
-                  onChange={e => setFormData({...formData, name: e.target.value})}
-                />
-              </div>
-            </div>
+    <>
+      <PageHeader
+        eyebrow="Directory"
+        title="Add a person"
+        description="Create an account and, with the person’s consent, enroll their face for verification."
+        actions={<Link className="btn btn-ghost" to="/people"><ArrowLeft size={16} aria-hidden="true" /> Back to people</Link>}
+      />
 
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-              <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>DEPT_CODE</label>
-              <div className="input-wrapper" style={{ position: 'relative' }}>
-                <ShieldCheck style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--accent-blue)' }} size={16} />
-                <input 
-                  type="text" 
-                  className="glass-input" 
-                  style={{ width: '100%', paddingLeft: '2.5rem', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', color: 'white', outline: 'none' }}
-                  required
-                  placeholder="DEPT_ID"
-                  value={formData.department}
-                  onChange={e => setFormData({...formData, department: e.target.value})}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Email and Password Fields */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-              <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>EMAIL_UPLINK</label>
-              <div className="input-wrapper" style={{ position: 'relative' }}>
-                <Mail style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--accent-blue)' }} size={16} />
-                <input 
-                  type="email" 
-                  className="glass-input" 
-                  style={{ width: '100%', paddingLeft: '2.5rem', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', color: 'white', outline: 'none' }}
-                  required
-                  placeholder="EMAIL_REQUIRED"
-                  value={formData.email}
-                  onChange={e => setFormData({...formData, email: e.target.value})}
-                />
-              </div>
-            </div>
-
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-              <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>SECURE_PASS</label>
-              <div className="input-wrapper" style={{ position: 'relative' }}>
-                <Lock style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--accent-blue)' }} size={16} />
-                <input 
-                  type="password" 
-                  className="glass-input" 
-                  style={{ width: '100%', paddingLeft: '2.5rem', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', color: 'white', outline: 'none' }}
-                  required
-                  placeholder="PASSWORD_REQUIRED"
-                  value={formData.password}
-                  onChange={e => setFormData({...formData, password: e.target.value})}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-              <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>ACCESS_LEVEL</label>
-              <select 
-                className="glass-input" 
-                value={formData.role}
-                onChange={e => setFormData({...formData, role: e.target.value})}
-                style={{ width: '100%', appearance: 'none', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', padding: '0.75rem', color: 'white', outline: 'none' }}
-              >
-                <option value="student">STUDENT_CADET</option>
-                <option value="faculty">FACULTY_OFFICER</option>
-                <option value="admin">ADMIN_COMMAND</option>
-              </select>
-            </div>
-            
-            <div style={{ fontFamily: 'var(--hud-font)' }}>
-               <label style={{ display: 'block', fontSize: '0.7rem', marginBottom: '0.5rem', color: 'var(--accent-blue)', letterSpacing: '1px', textTransform: 'uppercase' }}>RESEARCH_VAL</label>
-               <input 
-                  type="number"
-                  className="glass-input" 
-                  style={{ width: '100%', borderRadius: '0.25rem', fontSize: '0.875rem', background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(34, 211, 238, 0.3)', padding: '0.75rem', color: 'white', outline: 'none' }}
-                  placeholder="0"
-                  min="0"
-                  disabled={formData.role === 'student'}
-                  value={formData.researchPapers}
-                  onChange={e => setFormData({...formData, researchPapers: e.target.value})}
-                />
-            </div>
-          </div>
-
-          <button type="submit" className="btn-primary" disabled={isCapturing || !modelsLoaded} style={{ marginTop: '1rem', borderRadius: '0.25rem', background: 'var(--accent-blue)', color: 'var(--bg-primary)', fontWeight: 800, letterSpacing: '2px', height: '3.5rem' }}>
-            <Camera size={20} />
-            {isCapturing ? 'ACQUIRING...' : 'ACQUIRE BIOMETRICS'}
-          </button>
-        </form>
-      </div>
-
-      <div style={{ minWidth: 0 }}>
-        <h2 className="text-glow-arc" style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1.5rem', color: 'var(--accent-blue)', textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>Biometric Acquisition</h2>
-        <div className="glow-medium" style={{ borderRadius: '0.5rem', overflow: 'hidden', backgroundColor: '#000', position: 'relative', aspectRatio: '4/3', border: '2px solid var(--accent-blue)' }}>
-          <video 
-            ref={videoRef}
-            autoPlay 
-            muted 
-            playsInline
-            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.8 }}
-          />
-          {/* HUD Overlay Elements */}
-          <div style={{ position: 'absolute', top: 0, left: 0, width: 40, height: 40, borderTop: '4px solid var(--accent-blue)', borderLeft: '4px solid var(--accent-blue)', margin: '15px' }}></div>
-          <div style={{ position: 'absolute', top: 0, right: 0, width: 40, height: 40, borderTop: '4px solid var(--accent-blue)', borderRight: '4px solid var(--accent-blue)', margin: '15px' }}></div>
-          <div style={{ position: 'absolute', bottom: 0, left: 0, width: 40, height: 40, borderBottom: '4px solid var(--accent-blue)', borderLeft: '4px solid var(--accent-blue)', margin: '15px' }}></div>
-          <div style={{ position: 'absolute', bottom: 0, right: 0, width: 40, height: 40, borderBottom: '4px solid var(--accent-blue)', borderRight: '4px solid var(--accent-blue)', margin: '15px' }}></div>
-          
-          <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: '1px', background: 'rgba(34, 211, 238, 0.2)', boxShadow: '0 0 10px var(--accent-blue)' }} className="animate-pulse"></div>
-          
-          {!modelsLoaded && (
-            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(4px)' }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ width: '50px', height: '50px', border: '4px solid var(--accent-blue)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 1.5rem', boxShadow: '0 0 15px var(--accent-blue)' }}></div>
-                <p style={{ color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 800, letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>CALIBRATING_MODELS...</p>
-              </div>
-            </div>
-          )}
+      {created && (
+        <div style={{ marginBottom: 16 }}>
+          <Notice tone="info" title={`${created.name} was added.`}>
+            Sign-in email: <span className="mono">{created.email}</span>.{' '}
+            {created.temporaryPassword ? (
+              <>Temporary password (shown once): <span className="mono">{created.temporaryPassword}</span>{' '}
+                <button className="btn btn-sm btn-ghost" onClick={() => navigator.clipboard?.writeText(created.temporaryPassword).then(() => toast.success('Copied'))}><Copy size={12} /> Copy</button>
+              </>
+            ) : 'They sign in with the password you set.'}
+            {!created.faceEnrolled && ' No face was enrolled; they can only be marked manually.'}
+          </Notice>
         </div>
-        <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '0.75rem', background: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.1)' }}>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.5' }}>
-            <strong style={{ color: '#3b82f6' }}>Note:</strong> Please ensure good lighting and look directly into the camera. The system will extract your unique facial biometric hash for secure authentication.
-          </p>
+      )}
+
+      <form className="grid-halves" onSubmit={submit}>
+        <Card title="Account">
+          <div className="card-body stack">
+            <div className="form-grid">
+              <Field label="Full name" htmlFor="e-name"><input id="e-name" className="input" value={form.name} onChange={set('name')} required maxLength={120} autoComplete="off" /></Field>
+              <Field label="Role" htmlFor="e-role">
+                <select id="e-role" className="select" value={form.role} onChange={set('role')}>
+                  <option value="student">Student</option><option value="faculty">Faculty</option><option value="admin">Admin</option>
+                </select>
+              </Field>
+              <Field label="Email" htmlFor="e-email" hint="Leave blank to generate one"><input id="e-email" type="email" className="input" value={form.email} onChange={set('email')} autoComplete="off" /></Field>
+              <Field label="Password" htmlFor="e-pass" hint="Leave blank to generate a one-time password"><input id="e-pass" type="password" className="input" value={form.password} onChange={set('password')} minLength={8} autoComplete="new-password" /></Field>
+              <Field label="Department" htmlFor="e-dept"><input id="e-dept" className="input" value={form.department} onChange={set('department')} maxLength={120} /></Field>
+              {form.role !== 'student' && (
+                <Field label="Research papers" htmlFor="e-papers"><input id="e-papers" type="number" min="0" step="1" className="input" value={form.researchPapers} onChange={set('researchPapers')} /></Field>
+              )}
+            </div>
+            {form.role === 'admin' && <Notice tone="warning">Admins can delete people and all attendance data. Grant this role sparingly.</Notice>}
+          </div>
+        </Card>
+
+        <Card title="Face enrollment" sub="Optional · needed for face verification">
+          <div className="card-body stack">
+            <div className="viewport" style={{ aspectRatio: '4 / 3' }}>
+              <video ref={videoRef} muted playsInline aria-label="Camera preview" style={{ display: capture ? 'none' : undefined }} />
+              <canvas ref={probeRef} hidden />
+              {capture && <img src={capture.image} alt="Captured enrollment photo" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />}
+              {!capture && camera.state !== 'on' && (
+                <div className="viewport-overlay">
+                  {camera.state === 'starting' ? <div className="spinner" role="status" aria-label="Starting camera" /> : camera.state === 'error' ? (
+                    <div className="stack" style={{ alignItems: 'center' }} role="alert"><CameraOff size={20} aria-hidden="true" /><strong>{camera.title}</strong><span className="muted" style={{ fontSize: 'var(--text-sm)' }}>{camera.text}</span><button type="button" className="btn btn-sm" onClick={startCamera}>Try again</button></div>
+                  ) : (
+                    <div className="stack" style={{ alignItems: 'center' }}><ScanFace size={20} aria-hidden="true" /><span className="muted" style={{ fontSize: 'var(--text-sm)' }}>Face the camera in even light, without a mask or sunglasses.</span><button type="button" className="btn" onClick={startCamera}><Camera size={16} aria-hidden="true" /> Start camera</button></div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="row">
+              {camera.state === 'on' && <button type="button" className="btn btn-primary" onClick={takeCapture} disabled={busy === 'capture'}>{busy === 'capture' ? 'Checking…' : 'Capture face'}</button>}
+              {capture && <button type="button" className="btn" onClick={() => { setCapture(null); startCamera(); }}><RefreshCw size={14} aria-hidden="true" /> Retake</button>}
+            </div>
+            {capture && (
+              <label className="row" style={{ alignItems: 'flex-start', gap: 10, fontSize: 'var(--text-sm)' }}>
+                <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 3 }} />
+                <span className="secondary">This person has agreed to their face descriptor and a photo being stored for attendance verification, and knows they can ask for it to be deleted.</span>
+              </label>
+            )}
+          </div>
+        </Card>
+
+        <div style={{ gridColumn: '1 / -1' }} className="stack">
+          {error && <Notice tone="danger">{error}</Notice>}
+          <div className="row">
+            <button className="btn btn-primary btn-lg" disabled={!canSave}><UserPlus size={16} aria-hidden="true" /> {busy === 'save' ? 'Saving…' : capture ? 'Create account and enroll face' : 'Create account without face'}</button>
+            {capture && !consent && <span className="hint">Confirm consent to enroll the face.</span>}
+          </div>
         </div>
-      </div>
-    </div>
+      </form>
+    </>
   );
-};
-
-export default Register;
+}

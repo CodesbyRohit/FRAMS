@@ -1,87 +1,40 @@
 import axios from 'axios';
 
+export const SESSION_KEY = 'frams.session';
+export const SESSION_EXPIRED_EVENT = 'frams:session-expired';
+
+// In development Vite proxies /api to the Express server (vite.config.js).
+// For a separate deployment set VITE_API_URL, e.g. https://api.example.edu/api
 const api = axios.create({
-  baseURL: 'http://localhost:5000/api',
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: import.meta.env.VITE_API_URL || '/api',
+  timeout: 20000,
+  headers: { 'Content-Type': 'application/json' },
 });
 
-// Add a request interceptor to include the JWT token
-api.interceptors.request.use(
-  (config) => {
-    const user = JSON.parse(localStorage.getItem('framsUser'));
-    if (user && user.token) {
-      config.headers.Authorization = `Bearer ${user.token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
+export const readSession = () => {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed?.token && parsed?.user ? parsed : null;
+  } catch {
+    return null;
   }
-);
+};
 
-// Add a response interceptor to handle 401/403 (Unauthorized/Forbidden)
+api.interceptors.request.use((config) => {
+  const session = readSession();
+  if (session) config.headers.Authorization = `Bearer ${session.token}`;
+  return config;
+});
+
+// No offline fallbacks: a failed request is reported as a failure. (The previous
+// "demo safe mode" reported unsaved attendance as saved and granted fake sessions.)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Demo Safe Mode: Provide local fallback if backend is unreachable or errors
-    if (window.DEMO_SAFE_MODE && error.config && error.config.url) {
-      const url = error.config.url;
-      
-      // Attendance Marking Fallback
-      if (url.includes('/attendance/mark')) {
-        console.warn('A.R.I.A. -> BACKEND UNREACHABLE. ENGAGING LOCAL FAILOVER.');
-        const pending = JSON.parse(localStorage.getItem('frams_offline_records') || '[]');
-        const record = error.config.data ? JSON.parse(error.config.data) : {};
-        pending.push({ ...record, timestamp: new Date().toISOString(), offline: true });
-        localStorage.setItem('frams_offline_records', JSON.stringify(pending));
-        return Promise.resolve({ data: { success: true, message: 'Offline sync active' } });
-      }
-
-      // NEW: Specific Demo Login Failover
-      if (url.includes('/auth/login')) {
-         const body = error.config.data ? JSON.parse(error.config.data) : {};
-         const role = (body.role || '').toLowerCase();
-         const password = body.password || '';
-         
-         // Master Key Check: If matches, provide instant authorized session
-         if ((role === 'admin' && password === 'admin@123') ||
-             (role === 'faculty' && password === 'faculty@123') ||
-             (role === 'student' && password === 'student@123')) {
-           
-           console.warn(`A.R.I.A. -> MASTER KEY DETECTED (${role}). AUTHORIZING EXTERNALLY.`);
-           return Promise.resolve({ 
-             data: { 
-               token: 'demo_token_stark_industries_master',
-               user: {
-                 id: 'demo_id_' + role,
-                 role: role,
-                 username: role.charAt(0).toUpperCase() + role.slice(1)
-               }
-             } 
-           });
-         }
-         
-         // If credentials don't match the master keys, let the 401 error pass through
-         console.error('A.R.I.A. -> AUTHENTICATION REJECTED. INVALID MASTER KEY.');
-         return Promise.reject(error);
-      }
-
-      // Collection Endpoints Fallback
-      if (url.includes('/attendance') || url.includes('/users')) {
-        console.warn(`A.R.I.A. -> COLLECTION FETCH FAILED (${url}). PROVIDING SAFE ARRAY.`);
-        return Promise.resolve({ data: [] });
-      }
-    }
-
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      console.warn('Unauthorized access detected - Clearing session');
-      localStorage.removeItem('framsUser');
-      // Only redirect if not already on login page to avoid loops
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
-      }
+    const isLogin = error.config?.url?.includes('/auth/login');
+    if (error.response?.status === 401 && !isLogin) {
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
     }
     return Promise.reject(error);
   }

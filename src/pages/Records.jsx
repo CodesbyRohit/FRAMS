@@ -1,163 +1,153 @@
-import React, { useState, useEffect } from 'react';
-import { Filter, Search, Loader2 } from 'lucide-react';
-import api from '../services/api';
+import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
+import { FileSearch, Plus } from 'lucide-react';
+import api from '../services/api';
+import useResource from '../lib/useResource';
+import { daysBack, errorMessage, isoDate, METHOD, titleCase } from '../lib/format';
+import { Card, Dialog, EmptyState, ErrorState, Field, Loading, Notice, PageHeader, StatusPill } from '../ui';
 
-const Records = () => {
-  const [records, setRecords] = useState([]);
-  const [usersInfo, setUsersInfo] = useState([]);
-  const [loading, setLoading] = useState(true);
-  
-  // Filters
-  const [filterDate, setFilterDate] = useState('');
-  const [filterRole, setFilterRole] = useState('All');
-  const [searchQuery, setSearchQuery] = useState('');
+const PAGE = 50;
 
-  const loadData = async () => {
+export default function Records() {
+  const [from, setFrom] = useState(daysBack(30)[0]);
+  const [to, setTo] = useState(isoDate());
+  const [status, setStatus] = useState('');
+  const [role, setRole] = useState('');
+  const [method, setMethod] = useState('');
+  const [q, setQ] = useState('');
+  const [page, setPage] = useState(0);
+  const [adding, setAdding] = useState(false);
+
+  const { data, error, loading, reload } = useResource(
+    async () => (await api.get('/attendance', { params: { from: from || undefined, to: to || undefined, status: status || undefined } })).data,
+    [from, to, status]
+  );
+
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return (data || []).filter((r) =>
+      (!role || r.role === role) &&
+      (!method || (r.method || 'face') === method) &&
+      (!needle || r.name?.toLowerCase().includes(needle)));
+  }, [data, role, method, q]);
+
+  const visible = rows.slice(page * PAGE, (page + 1) * PAGE);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  const resetPage = (fn) => (e) => { fn(e.target.value); setPage(0); };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Records"
+        title="Attendance"
+        description="Every attendance record, how it was created and whether a person has reviewed it."
+        actions={<button className="btn btn-primary" onClick={() => setAdding(true)}><Plus size={16} aria-hidden="true" /> Manual entry</button>}
+      />
+      <Card>
+        <div className="toolbar" role="search">
+          <Field label="Search name" htmlFor="f-q"><input id="f-q" className="input" value={q} onChange={resetPage(setQ)} placeholder="Name" /></Field>
+          <Field label="From" htmlFor="f-from"><input id="f-from" type="date" className="input" value={from} max={to || undefined} onChange={resetPage(setFrom)} /></Field>
+          <Field label="To" htmlFor="f-to"><input id="f-to" type="date" className="input" value={to} min={from || undefined} onChange={resetPage(setTo)} /></Field>
+          <Field label="Status" htmlFor="f-status">
+            <select id="f-status" className="select" value={status} onChange={resetPage(setStatus)}>
+              <option value="">Any</option><option value="present">Present</option><option value="pending_review">Pending review</option><option value="rejected">Rejected</option>
+            </select>
+          </Field>
+          <Field label="Role" htmlFor="f-role">
+            <select id="f-role" className="select" value={role} onChange={resetPage(setRole)}>
+              <option value="">Any</option><option value="student">Student</option><option value="faculty">Faculty</option><option value="admin">Admin</option>
+            </select>
+          </Field>
+          <Field label="Method" htmlFor="f-method">
+            <select id="f-method" className="select" value={method} onChange={resetPage(setMethod)}>
+              <option value="">Any</option><option value="face">Face verification</option><option value="manual">Manual entry</option><option value="correction">Correction</option>
+            </select>
+          </Field>
+        </div>
+
+        {loading && !data ? <Loading /> : error ? <ErrorState message={errorMessage(error)} onRetry={reload} /> : rows.length === 0 ? (
+          <EmptyState icon={FileSearch} title="No records match" description="Widen the date range or clear a filter." />
+        ) : (
+          <>
+            <div className="table-wrap">
+              <table className="table">
+                <caption className="sr-only">Attendance records, {rows.length} results</caption>
+                <thead>
+                  <tr><th>Name</th><th>Date</th><th>Status</th><th>Method</th><th className="right">Similarity</th><th>Risk</th><th>Review</th></tr>
+                </thead>
+                <tbody>
+                  {visible.map((r) => (
+                    <tr key={r._id}>
+                      <td><div className="cell-primary">{r.name}</div><div className="cell-sub">{titleCase(r.role)}</div></td>
+                      <td className="mono" style={{ whiteSpace: 'nowrap' }}>{r.date}<div className="cell-sub">{r.time}</div></td>
+                      <td><StatusPill value={r.status} /></td>
+                      <td className="secondary" style={{ whiteSpace: 'nowrap' }}>{METHOD[r.method || 'face']}</td>
+                      <td className="right mono">{r.confidenceScore != null ? `${r.confidenceScore}%` : '—'}</td>
+                      <td>{(r.method || 'face') === 'face' ? <StatusPill kind="risk" value={r.riskLevel || 'LOW'} /> : <span className="muted">—</span>}</td>
+                      <td>{r.reviewStatus && r.reviewStatus !== 'none' ? <StatusPill kind="review" value={r.reviewStatus} /> : <span className="muted">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="row-between" style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', fontSize: 'var(--text-xs)' }}>
+              <span className="muted">{rows.length} record{rows.length === 1 ? '' : 's'}{data.length >= 5000 && ' (first 5,000 — narrow the dates)'}</span>
+              <div className="row">
+                <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</button>
+                <span className="muted">Page {page + 1} of {pages}</span>
+                <button className="btn btn-sm" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>Next</button>
+              </div>
+            </div>
+          </>
+        )}
+      </Card>
+      <ManualEntryDialog open={adding} onClose={() => setAdding(false)} onDone={() => { setAdding(false); reload(); }} />
+    </>
+  );
+}
+
+function ManualEntryDialog({ open, onClose, onDone }) {
+  const { data: users, error: usersError } = useResource(async () => (open ? (await api.get('/users')).data : []), [open]);
+  const [userId, setUserId] = useState('');
+  const [date, setDate] = useState(isoDate());
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
     try {
-      const [attendanceRes, usersRes] = await Promise.all([
-        api.get('/attendance'),
-        api.get('/users')
-      ]);
-      setRecords(attendanceRes.data);
-      setUsersInfo(usersRes.data);
+      await api.post('/attendance', { userId, date, note: note.trim() || undefined });
+      toast.success('Attendance recorded');
+      setUserId(''); setNote('');
+      onDone();
     } catch (error) {
-      console.error('Failed to load records:', error);
-      toast.error('Failed to sync history logs');
+      setErr(errorMessage(error));
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  // Compute final filtered array
-  const filteredRecords = (records || []).filter(r => {
-    const matchesDate = filterDate ? (r?.date === filterDate) : true;
-    const matchesRole = filterRole !== 'All' ? (r?.role || 'unknown').toLowerCase() === filterRole.toLowerCase() : true;
-    const matchesSearch = searchQuery ? (r?.name || '').toLowerCase().includes(searchQuery.toLowerCase()) : true;
-    return matchesDate && matchesRole && matchesSearch;
-  });
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', height: '60vh', alignItems: 'center', justifyContent: 'center' }}>
-        <Loader2 className="animate-spin" size={48} color="#3b82f6" />
-      </div>
-    );
-  }
-
   return (
-    <div className="animate-fade-in">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 className="text-glow-arc" style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-             Archive Retrieval
-          </h1>
-          <p style={{ color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>
-             SYSTEM.LOGS // DATA_QUERY_ACTIVE
-          </p>
+    <Dialog open={open} onClose={onClose} title="Manual attendance entry" description="For when face verification isn’t possible. The entry is marked as manual and recorded in the audit log under your name.">
+      <form className="stack" onSubmit={submit}>
+        <Field label="Person" htmlFor="m-user">
+          <select id="m-user" className="select" value={userId} onChange={(e) => setUserId(e.target.value)} required>
+            <option value="">{users ? 'Choose a person' : 'Loading…'}</option>
+            {(users || []).map((u) => <option key={u._id} value={u._id}>{u.name} · {u.role}</option>)}
+          </select>
+        </Field>
+        {usersError && <Notice tone="danger">{errorMessage(usersError)}</Notice>}
+        <Field label="Day" htmlFor="m-date"><input id="m-date" type="date" className="input" value={date} max={isoDate()} onChange={(e) => setDate(e.target.value)} required /></Field>
+        <Field label="Note (optional)" htmlFor="m-note"><input id="m-note" className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="e.g. Camera unavailable in room 204" /></Field>
+        {err && <Notice tone="danger">{err}</Notice>}
+        <div className="dialog-footer" style={{ padding: 0 }}>
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy || !userId}>{busy ? 'Saving…' : 'Record attendance'}</button>
         </div>
-        
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', fontFamily: 'var(--hud-font)' }}>
-          {/* Search Box */}
-          <div className="glow-low" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-card)', padding: '0.5rem 1rem', borderRadius: '0.25rem', border: '1px solid var(--border-color)' }}>
-            <Search size={14} color="var(--accent-blue)" />
-            <input 
-              type="text" 
-              placeholder="SEARCH IDENT..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', outline: 'none', width: '130px', fontSize: '0.75rem', textTransform: 'uppercase' }}
-            />
-          </div>
-
-          {/* Role Filter */}
-          <div className="glow-low" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-card)', padding: '0.5rem 1rem', borderRadius: '0.25rem', border: '1px solid var(--border-color)' }}>
-            <Filter size={14} color="var(--accent-blue)" />
-            <select 
-              value={filterRole}
-              onChange={(e) => setFilterRole(e.target.value)}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', outline: 'none', fontSize: '0.75rem', textTransform: 'uppercase' }}
-            >
-              <option value="All">ALL PERSONNEL</option>
-              <option value="Student">STUDENTS</option>
-              <option value="Faculty">FACULTY</option>
-              <option value="Admin">ADMIN</option>
-            </select>
-          </div>
-
-          {/* Date Filter */}
-          <div className="glow-low" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'var(--bg-card)', padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid var(--border-color)' }}>
-            <Filter size={14} color="var(--accent-blue)" />
-            <input 
-              type="date" 
-              value={filterDate}
-              onChange={(e) => setFilterDate(e.target.value)}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-main)', outline: 'none', colorScheme: 'dark', fontSize: '0.75rem' }}
-            />
-            {filterDate && (
-              <button onClick={() => setFilterDate('')} style={{ background: 'none', border: 'none', color: 'var(--stark-red)', cursor: 'pointer', fontSize: '0.7rem', padding: '0 0.5rem', fontWeight: 800 }}>
-                X
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="glass-panel" style={{ borderRadius: '1rem', overflow: 'hidden' }}>
-        {filteredRecords.length > 0 ? (
-          <table className="glass-table">
-            <thead>
-              <tr>
-                <th style={{ width: '80px', textAlign: 'center' }}>Profile</th>
-                <th>Name</th>
-                <th>Role</th>
-                <th>Date</th>
-                <th>Time</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRecords?.map((record, idx) => {
-                const userObj = usersInfo?.find(u => u?._id === record?.userId);
-                return (
-                  <tr key={`${record?.userId || idx}-${idx}`}>
-                    <td style={{ textAlign: 'center' }}>
-                      {userObj?.faceImage ? (
-                        <img src={userObj.faceImage} alt={record?.name} style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border-color)' }} />
-                      ) : (
-                        <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: 'var(--bg-primary)', display: 'inline-block', border: '1px solid var(--border-color)' }}></div>
-                      )}
-                    </td>
-                    <td style={{ fontWeight: 600, color: 'var(--text-main)', letterSpacing: '0.5px' }}>
-                      {record?.name?.toUpperCase() || 'PERSONNEL'}
-                    </td>
-                    <td style={{ fontFamily: 'var(--hud-font)', fontSize: '0.75rem' }}>
-                      <span className={`badge badge-${record?.role?.toLowerCase() || 'guest'}`} style={{ borderRadius: '2px', border: '1px solid currentColor' }}>
-                        {record?.role?.toUpperCase() || 'GUEST'}
-                      </span>
-                    </td>
-                    <td style={{ fontFamily: 'var(--hud-font)', color: 'var(--text-muted)', fontSize: '0.75rem' }}>{record?.date || '----'}</td>
-                    <td style={{ fontFamily: 'var(--hud-font)', color: 'var(--text-muted)', fontSize: '0.75rem' }}>{record?.time || '--:--'}</td>
-                    <td style={{ color: (record?.confidenceScore || 0) > 80 ? 'var(--stark-green)' : 'var(--stark-gold)', fontWeight: 800, fontFamily: 'var(--hud-font)' }}>
-                      {record?.confidenceScore || 0}%
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
-          <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-            No attendance records matched your filters.
-          </div>
-        )}
-      </div>
-    </div>
+      </form>
+    </Dialog>
   );
-};
-
-export default Records;
+}

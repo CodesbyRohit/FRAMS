@@ -6,7 +6,6 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 const User = require(path.join(__dirname, 'models', 'User'));
-const Attendance = require(path.join(__dirname, 'models', 'Attendance'));
 
 const cleanup = async () => {
     try {

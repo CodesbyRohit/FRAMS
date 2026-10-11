@@ -2,13 +2,15 @@ class VoiceService {
   constructor() {
     this.synth = window.speechSynthesis;
     this.voices = [];
-    this.enabled = localStorage.getItem('frams_voice_enabled') !== 'false';
+    // Opt-in: spoken output in a shared room can disclose who was just verified.
+    this.enabled = localStorage.getItem('frams_voice_enabled') === 'true';
     this.currentUtterance = null;
     this.lastSpeakTime = 0;
     this.isSpeaking = false;
     this.cooldown = 1500; // ms
 
     // Load voices
+    if (!this.synth) return; // browser without Web Speech API
     this._loadVoices();
     if (this.synth.onvoiceschanged !== undefined) {
       this.synth.onvoiceschanged = () => this._loadVoices();

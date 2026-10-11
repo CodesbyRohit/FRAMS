@@ -1,190 +1,100 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  CheckCircle2, 
-  Calendar, 
-  Clock, 
-  TrendingUp, 
-  Activity,
-  History,
-  Award,
-  Loader2
-} from 'lucide-react';
-import { 
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip
-} from 'recharts';
-import { useAuth } from '../context/AuthContext';
+import { Link } from 'react-router-dom';
+import { CalendarCheck, Clock, MessageSquareWarning, ShieldQuestion } from 'lucide-react';
 import api from '../services/api';
-import toast from 'react-hot-toast';
+import useResource from '../lib/useResource';
+import { useAuth } from '../context/auth';
+import { daysBack, errorMessage, formatDay, isoDate, METHOD } from '../lib/format';
+import { Card, EmptyState, ErrorState, Loading, Notice, PageHeader, Stat, StatusPill } from '../ui';
 
-const StudentDashboard = () => {
-  const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [attendanceHistory, setAttendanceHistory] = useState([]);
-  const [chartData, setChartData] = useState([]);
-  const [stats, setStats] = useState([]);
+const STRIP_DAYS = 35;
 
-  const fetchStudentData = async () => {
-    try {
-      const { data: attendance } = await api.get(`/attendance/student/${user._id}`);
-      
-      // Process attendance history
-      const history = (attendance || []).map(a => ({
-        date: a?.date || '----',
-        status: 'Present',
-        time: a?.time || '--:--'
-      }));
-      setAttendanceHistory(history);
-
-      // Process stats
-      const totalClasses = 30; // Mock total classes for calc
-      const attended = (attendance || []).length;
-      const rate = totalClasses > 0 ? Math.round((attended / totalClasses) * 100) : 0;
-      const lastScan = attendance?.[0]?.time || '--:--';
-
-      setStats([
-        { label: 'Attendance Rate', value: `${rate}%`, icon: TrendingUp, color: '#3b82f6' },
-        { label: 'Classes Attended', value: `${attended}/${totalClasses}`, icon: CheckCircle2, color: '#10b981' },
-        { label: 'Last Scan', value: lastScan, icon: Clock, color: '#f59e0b' },
-        { label: 'Profile Status', value: 'Active', icon: Award, color: '#8b5cf6' },
-      ]);
-
-      // Process chart data (Last 7 days)
-      const last7Days = [...Array(7)].map((_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        return d.toISOString().split('T')[0];
-      }).reverse();
-
-      const chart = last7Days.map(date => ({
-        name: new Date(date).toLocaleDateString(undefined, { weekday: 'short' }),
-        score: (attendance || []).some(a => a?.date === date) ? 100 : 0
-      }));
-      setChartData(chart);
-
-    } catch (error) {
-      console.error('Failed to fetch student dashboard data:', error);
-      toast.error('Could not sync your attendance history');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (user && user._id) {
-      fetchStudentData();
-    }
-  }, [user]);
-
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', height: '60vh', alignItems: 'center', justifyContent: 'center' }}>
-        <Loader2 className="animate-spin" size={48} color="#3b82f6" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="student-dashboard" style={{ padding: '1.5rem', animate: 'fade-in 0.5s ease-out' }}>
-      <header style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.875rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-          Welcome back, {user?.name || user?.username || 'Personnel'}
-        </h1>
-        <p style={{ color: 'var(--text-muted)' }}>Here's your personal attendance summary from cloud</p>
-      </header>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-        {stats.map((stat, idx) => (
-          <div key={idx} className="glass-panel" style={{ padding: '1.5rem', borderRadius: '1rem', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <div style={{ padding: '0.5rem', borderRadius: '0.75rem', backgroundColor: `${stat.color}15`, color: stat.color }}>
-                <stat.icon size={24} />
-              </div>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{stat.label}</span>
-            </div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{stat.value}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1.5rem' }}>
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2rem' }}>
-            <Activity size={20} color="var(--accent-blue)" />
-            <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>Attendance Performance</h3>
-          </div>
-          <div style={{ height: '300px', width: '100%' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} />
-                <YAxis stroke="var(--text-muted)" fontSize={12} domain={[0, 100]} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '0.5rem' }}
-                  itemStyle={{ color: '#f8fafc' }}
-                />
-                <Area type="monotone" dataKey="score" stroke="#3b82f6" fillOpacity={1} fill="url(#colorScore)" strokeWidth={3} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-            <History size={20} color="var(--accent-blue)" />
-            <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>Recent Attendance Logs</h3>
-          </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border-color)' }}>
-                  <th style={{ padding: '1rem 0', color: 'var(--text-muted)', fontSize: '0.875rem', fontWeight: 500 }}>Date</th>
-                  <th style={{ padding: '1rem 0', color: 'var(--text-muted)', fontSize: '0.875rem', fontWeight: 500 }}>Time</th>
-                  <th style={{ padding: '1rem 0', color: 'var(--text-muted)', fontSize: '0.875rem', fontWeight: 500 }}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {attendanceHistory.map((item, idx) => (
-                  <tr key={idx} style={{ borderBottom: idx !== attendanceHistory.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
-                    <td style={{ padding: '1rem 0', fontWeight: 500 }}>{item.date}</td>
-                    <td style={{ padding: '1rem 0', color: 'var(--text-muted)' }}>{item.time}</td>
-                    <td style={{ padding: '1rem 0' }}>
-                      <span style={{ 
-                        padding: '0.25rem 0.75rem', 
-                        borderRadius: '999px', 
-                        fontSize: '0.75rem', 
-                        fontWeight: 600,
-                        backgroundColor: item.status === 'Present' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                        color: item.status === 'Present' ? '#10b981' : '#ef4444'
-                      }}>
-                        {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {attendanceHistory.length === 0 && (
-                  <tr>
-                    <td colSpan="3" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No records found</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+const load = async () => {
+  const [att, corr] = await Promise.all([api.get('/attendance/me'), api.get('/corrections')]);
+  return { attendance: att.data, corrections: corr.data };
 };
 
-export default StudentDashboard;
+export default function MyAttendance() {
+  const { user } = useAuth();
+  const { data, error, loading, reload } = useResource(load);
+
+  const header = (
+    <PageHeader eyebrow="My attendance" title={`Hello, ${user.name?.split(' ')[0] ?? ''}`}
+      description="Days FRAMS has recorded for you, and anything still waiting on a decision."
+      actions={<Link className="btn" to="/corrections"><MessageSquareWarning size={16} aria-hidden="true" /> Request a correction</Link>} />
+  );
+
+  if (loading && !data) return <>{header}<Loading /></>;
+  if (error && !data) return <>{header}<div className="card"><ErrorState message={errorMessage(error)} onRetry={reload} /></div></>;
+
+  const { attendance, corrections } = data;
+  const byDate = new Map(attendance.map((a) => [a.date, a]));
+  const days = daysBack(STRIP_DAYS);
+  const recentPresent = days.filter((d) => byDate.get(d)?.status === 'present').length;
+  const pending = attendance.filter((a) => a.status === 'pending_review').length;
+  const openCorrections = corrections.filter((c) => c.status === 'pending').length;
+  const last = attendance.find((a) => a.status === 'present');
+  const today = isoDate();
+
+  return (
+    <>
+      {header}
+      <div className="stack-lg">
+        <div className="grid-stats">
+          <Stat label={`Days present · last ${STRIP_DAYS} days`} icon={CalendarCheck} value={recentPresent} />
+          <Stat label="Last recorded" icon={Clock} value={<span style={{ fontSize: 'var(--text-xl)' }}>{last ? formatDay(last.date, { day: 'numeric', month: 'short' }) : '—'}</span>} foot={last ? `at ${last.time}` : 'No records yet'} />
+          <Stat label="Waiting for review" icon={ShieldQuestion} value={pending} foot={pending ? 'A faculty member will decide' : 'Nothing pending'} />
+          <Stat label="Open correction requests" icon={MessageSquareWarning} value={openCorrections} foot={<Link to="/corrections">View requests</Link>} />
+        </div>
+
+        <Notice tone="info">FRAMS doesn’t know your class timetable, so it can’t show an attendance percentage — only the days it has recorded.</Notice>
+
+        <Card title="Last 35 days" sub="Each square is a day">
+          <div className="card-body stack">
+            <div className="daystrip" role="list">
+              {days.map((d) => {
+                const rec = byDate.get(d);
+                const state = rec ? (rec.status === 'present' ? 'present' : rec.status === 'pending_review' ? 'pending' : rec.status === 'rejected' ? 'rejected' : undefined) : undefined;
+                const label = `${formatDay(d, { weekday: 'long', day: 'numeric', month: 'long' })}: ${rec ? rec.status.replace('_', ' ') : 'no record'}`;
+                return <div key={d} className="day" role="listitem" data-state={state} data-today={d === today} title={label} aria-label={label} />;
+              })}
+            </div>
+            <div className="chart-legend">
+              <span className="legend-key"><span className="legend-swatch" style={{ background: 'rgba(95,211,148,0.5)' }} />Present</span>
+              <span className="legend-key"><span className="legend-swatch" style={{ background: 'repeating-linear-gradient(135deg, rgba(242,189,75,.6) 0 2px, rgba(242,189,75,.2) 2px 4px)' }} />Pending review</span>
+              <span className="legend-key"><span className="legend-swatch" style={{ background: 'rgba(242,122,122,0.4)' }} />Rejected</span>
+              <span className="legend-key"><span className="legend-swatch" style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border)' }} />No record</span>
+            </div>
+          </div>
+        </Card>
+
+        <Card title="History">
+          {attendance.length === 0 ? (
+            <EmptyState icon={CalendarCheck} title="No attendance recorded yet" description="When you’re verified at a kiosk or marked by faculty, the day will appear here."
+              action={<Link className="btn btn-sm" to="/corrections">Something missing? Request a correction</Link>} />
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead><tr><th>Day</th><th>Time</th><th>Status</th><th>How</th><th>What this means</th></tr></thead>
+                <tbody>
+                  {attendance.map((a) => (
+                    <tr key={a._id}>
+                      <td style={{ whiteSpace: 'nowrap' }}>{formatDay(a.date, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                      <td className="mono">{a.time}</td>
+                      <td><StatusPill value={a.status} /></td>
+                      <td className="secondary">{METHOD[a.method || 'face']}</td>
+                      <td className="cell-sub" style={{ maxWidth: 340 }}>
+                        {a.status === 'pending_review' && 'The scan wasn’t conclusive. A faculty member will confirm it — you don’t need to do anything.'}
+                        {a.status === 'rejected' && <>A reviewer rejected this record{a.reviewNote ? `: “${a.reviewNote}”` : '.'} <Link to="/corrections">Request a correction</Link> if you believe this is wrong.</>}
+                        {a.status === 'present' && (a.reviewStatus === 'confirmed' ? 'Confirmed by a reviewer.' : 'Recorded.')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </div>
+    </>
+  );
+}
