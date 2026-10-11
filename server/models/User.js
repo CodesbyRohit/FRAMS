@@ -2,15 +2,18 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
+  name: { type: String, required: true, trim: true },
   username: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   role: { type: String, enum: ['admin', 'faculty', 'student'], required: true },
   password: { type: String, required: true },
   department: { type: String, required: false },
   researchPapers: { type: Number, required: false, default: 0 },
-  faceDescriptor: { type: [Number], required: false },
-  faceImage: { type: String, required: false }, // Base64 or URL
+  // Biometric fields are never returned unless a query explicitly selects them
+  // (`.select('+faceDescriptor')`). Only the verification service needs the descriptor.
+  faceDescriptor: { type: [Number], required: false, select: false },
+  faceImage: { type: String, required: false, select: false }, // base64 JPEG data URL
+  faceEnrolledAt: { type: Date },
   behaviorProfile: {
     blinkRate: { type: Number, default: 0 },
     movementPattern: { type: Number, default: 0 },
@@ -26,17 +29,20 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+userSchema.set('toJSON', {
+  transform: (_doc, ret) => {
+    delete ret.password;
+    delete ret.__v;
+    return ret;
+  },
+});
+
 userSchema.pre('save', async function() {
   if (!this.isModified('password')) {
     return;
   }
-  
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-  } catch (err) {
-    throw err;
-  }
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 userSchema.methods.matchPassword = async function(enteredPassword) {

@@ -1,64 +1,23 @@
-const mongoose = require('mongoose');
-const dotenv = require('dotenv');
+// Creates the demo accounts (admin/faculty/student @frams.edu). Refuses to run
+// unless FRAMS_SEED_DEMO=true, and never resets passwords of existing accounts
+// (the previous version silently reset admin@frams.edu to admin@123).
 const path = require('path');
-const User = require('./models/User');
+const dotenv = require('dotenv');
+const mongoose = require('mongoose');
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-const seedAdmin = async () => {
-  try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('MongoDB connected for seeding...');
+const { seedDemoAccounts } = require('./lib/demo');
 
-    let admin = await User.findOne({ email: 'admin@frams.edu' });
-    if (!admin) {
-      admin = await User.create({
-        name: 'System Admin',
-        username: 'admin',
-        email: 'admin@frams.edu',
-        password: 'admin@123',
-        role: 'admin'
-      });
-      console.log('Initial Admin created: admin@frams.edu / admin@123');
-    } else {
-      admin.username = 'admin';
-      admin.password = 'admin@123';
-      admin.role = 'admin';
-      await admin.save();
-      console.log('Admin credentials updated to: admin@frams.edu / admin@123');
-    }
+if (process.env.FRAMS_SEED_DEMO !== 'true') {
+  console.error('Refusing to seed: set FRAMS_SEED_DEMO=true to create demo accounts with publicly known passwords.');
+  process.exit(1);
+}
 
-    // Seed Faculty
-    let faculty = await User.findOne({ email: 'faculty@frams.edu' });
-    if (!faculty) {
-      await User.create({
-        name: 'Faculty Officer',
-        username: 'faculty',
-        email: 'faculty@frams.edu',
-        password: 'faculty@123',
-        role: 'faculty'
-      });
-      console.log('Faculty created: faculty@frams.edu / faculty@123');
-    }
-
-    // Seed Student
-    let student = await User.findOne({ email: 'student@frams.edu' });
-    if (!student) {
-      await User.create({
-        name: 'Student Cadet',
-        username: 'student',
-        email: 'student@frams.edu',
-        password: 'student@123',
-        role: 'student'
-      });
-      console.log('Student created: student@frams.edu / student@123');
-    }
-
-    process.exit();
-  } catch (error) {
-    console.error('Error seeding admin:', error);
+mongoose.connect(process.env.MONGO_URI)
+  .then(seedDemoAccounts)
+  .then(() => mongoose.disconnect())
+  .catch((err) => {
+    console.error('Seeding failed:', err.message);
     process.exit(1);
-  }
-};
-
-seedAdmin();
+  });

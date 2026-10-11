@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "seed:demo": "node seed.js",
+    "check:duplicates": "node scripts/check-duplicates.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
   },
   "keywords": [],
   "author": "",
@@ -19,5 +21,9 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.3.0",
     "morgan": "^1.10.1"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^10.4.3",
+    "supertest": "^7.3.1"
   }
 }

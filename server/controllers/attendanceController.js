@@ -1,103 +1,138 @@
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
+const audit = require('../lib/audit');
+const { badRequest, forbidden, notFound, assertObjectId, isIsoDate, localDate, localTime, isDuplicateKey } = require('../lib/http');
 
-const markAttendance = async (req, res) => {
-  const { userId, name, role, date, time, confidenceScore, status, riskLevel, riskScore, riskReason, scanTime } = req.body;
+const STATUSES = ['present', 'unknown', 'pending_review', 'rejected'];
+const REVIEW_STATUSES = ['none', 'pending', 'confirmed', 'rejected'];
 
-  console.log(`[BACKEND] Marking attendance for ${userId || name}. Confidence: ${confidenceScore}%`);
-  
-  // 1. Confidence Threshold (Lowered to 50% for better reliability)
-  const THRESHOLD = 50;
-  if (confidenceScore < THRESHOLD) {
-    console.warn(`[BACKEND] Rejected: Confidence too low (${confidenceScore}%). Required: ${THRESHOLD}%`);
-    return res.status(400).json({ 
-      success: false, 
-      message: `Confidence too low (${confidenceScore}%). Minimum ${THRESHOLD}% required.` 
-    });
-  }
+const isStaff = (user) => user.role === 'admin' || user.role === 'faculty';
 
-  // 2. Prevent Multiple Scans (Daily Check)
-  const today = date || new Date().toISOString().split('T')[0];
-  const existingRecord = await Attendance.findOne({ userId, date: today });
-
-  if (existingRecord) {
-    return res.status(200).json({ 
-      success: true, 
-      alreadyMarked: true,
-      message: 'Attendance already marked for today.',
-      timestamp: existingRecord.time
-    });
-  }
-
-  // 3. Create Attendance Record
-  try {
-    const attendance = await Attendance.create({
-      userId,
-      name,
-      role: role || 'student',
-      date: today,
-      time: time || new Date().toLocaleTimeString(),
-      confidenceScore,
-      status: status || 'present',
-      riskLevel: riskLevel || 'LOW',
-      riskScore: riskScore || 0,
-      riskReason: riskReason || 'Normal behavior'
-    });
-
-    // 4. Update User Risk Profile
-    if (userId) {
-      const user = await User.findById(userId);
-      if (user) {
-         if (!user.riskProfile) {
-           user.riskProfile = { avgBehaviorScore: 0.8, avgScanTime: 2000, anomalyCount: 0 };
-         }
-         if (scanTime) {
-           user.riskProfile.avgScanTime = (user.riskProfile.avgScanTime * 0.9) + (scanTime * 0.1);
-         }
-         if (riskLevel === 'HIGH') {
-           user.riskProfile.anomalyCount += 1;
-         }
-         await user.save();
-      }
-    }
-
-    console.log(`[BACKEND] Attendance SUCCESS for ${name} [RISK: ${riskLevel || 'LOW'}]`);
-    res.status(201).json(attendance);
-  } catch (error) {
-    console.error(`[BACKEND] Attendance ERROR for ${name}:`, error);
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Validation Error', 
-        details: error.message 
-      });
-    }
-    res.status(500).json({ success: false, message: 'Server error marking attendance' });
-  }
-};
-
+// GET /api/attendance — staff. Optional filters: from, to (YYYY-MM-DD), status, reviewStatus, userId.
+// Faculty currently see all records: the data model has no classes or course
+// assignments to scope them by (see audit §6).
 const getAttendance = async (req, res) => {
-  const attendance = await Attendance.find({}).sort({ createdAt: -1 });
+  const { from, to, status, reviewStatus, userId } = req.query;
+  const filter = {};
+  if (from || to) {
+    if ((from && !isIsoDate(from)) || (to && !isIsoDate(to))) throw badRequest('Dates must be YYYY-MM-DD');
+    filter.date = {};
+    if (from) filter.date.$gte = from;
+    if (to) filter.date.$lte = to;
+  }
+  if (status) {
+    if (!STATUSES.includes(status)) throw badRequest('Unknown status');
+    filter.status = status;
+  }
+  if (reviewStatus) {
+    if (!REVIEW_STATUSES.includes(reviewStatus)) throw badRequest('Unknown review status');
+    filter.reviewStatus = reviewStatus;
+  }
+  if (userId) {
+    assertObjectId(userId, 'userId');
+    filter.userId = userId;
+  }
+  const attendance = await Attendance.find(filter).sort({ createdAt: -1 }).limit(5000);
   res.json(attendance);
 };
 
+const getMyAttendance = async (req, res) => {
+  const attendance = await Attendance.find({ userId: req.user._id }).sort({ createdAt: -1 });
+  res.json(attendance);
+};
+
+// GET /api/attendance/student/:id — the student themself, or staff.
 const getStudentAttendance = async (req, res) => {
+  assertObjectId(req.params.id);
+  if (!isStaff(req.user) && String(req.user._id) !== String(req.params.id)) {
+    throw forbidden('You can only view your own attendance');
+  }
+  const attendance = await Attendance.find({ userId: req.params.id }).sort({ createdAt: -1 });
+  res.json(attendance);
+};
+
+// POST /api/attendance — manual marking by staff. Identity fields come from the
+// database, not the request; confidence/risk fields in the body are ignored.
+const markManual = async (req, res) => {
+  const { userId, date, note } = req.body || {};
+  assertObjectId(userId, 'userId');
+  const day = date ?? localDate();
+  if (!isIsoDate(day)) throw badRequest('Date must be YYYY-MM-DD');
+  if (day > localDate()) throw badRequest('Attendance cannot be recorded for a future date');
+
+  const user = await User.findById(userId);
+  if (!user) throw notFound('User not found');
+
   try {
-    const attendance = await Attendance.find({ userId: req.params.id }).sort({ createdAt: -1 });
-    res.json(attendance);
-  } catch (error) {
-    // Return empty array for demo-only or invalid IDs to prevent 500 crashes
-    res.json([]);
+    const record = await Attendance.create({
+      userId: user._id,
+      name: user.name,
+      role: user.role,
+      date: day,
+      time: localTime(),
+      method: 'manual',
+      status: 'present',
+      reviewNote: typeof note === 'string' ? note.slice(0, 500) : undefined,
+      recordedBy: req.user._id,
+    });
+    await audit(req, 'attendance.manual_marked', { targetType: 'attendance', targetId: record._id, details: { userId: String(user._id), date: day } });
+    res.status(201).json(record);
+  } catch (err) {
+    if (isDuplicateKey(err)) return res.status(409).json({ message: `${user.name} already has a record for ${day}` });
+    throw err;
   }
 };
 
+// The original unauthenticated, client-trusted endpoint.
+const markLegacy = (req, res) => {
+  res.status(410).json({ message: 'Removed. Face attendance is recorded by POST /api/verify.' });
+};
+
+const getReviewQueue = async (req, res) => {
+  const records = await Attendance.find({ reviewStatus: 'pending' }).sort({ createdAt: -1 }).limit(500);
+  res.json(records);
+};
+
+// PATCH /api/attendance/:id/review { decision: 'confirm' | 'reject', note }
+const reviewRecord = async (req, res) => {
+  assertObjectId(req.params.id);
+  const { decision, note } = req.body || {};
+  if (!['confirm', 'reject'].includes(decision)) throw badRequest('Decision must be "confirm" or "reject"');
+  if (decision === 'reject' && (typeof note !== 'string' || note.trim().length < 3)) {
+    throw badRequest('Add a short note explaining the rejection');
+  }
+
+  const record = await Attendance.findById(req.params.id);
+  if (!record) throw notFound('Record not found');
+  if (record.reviewStatus !== 'pending') throw badRequest('This record is not awaiting review');
+
+  const before = { status: record.status, reviewStatus: record.reviewStatus };
+  record.status = decision === 'confirm' ? 'present' : 'rejected';
+  record.reviewStatus = decision === 'confirm' ? 'confirmed' : 'rejected';
+  record.reviewedBy = req.user._id;
+  record.reviewedAt = new Date();
+  record.reviewNote = typeof note === 'string' ? note.trim().slice(0, 500) : undefined;
+  await record.save();
+
+  await audit(req, `attendance.review_${record.reviewStatus}`, {
+    targetType: 'attendance',
+    targetId: record._id,
+    details: { before, after: { status: record.status, reviewStatus: record.reviewStatus }, reviewReasons: record.reviewReasons },
+  });
+  res.json(record);
+};
+
+const CLEAR_CONFIRMATION = 'CLEAR ALL ATTENDANCE';
+
+// Admin only (previously any faculty member could wipe every record).
 const clearAllAttendance = async (req, res) => {
-  try {
-    await Attendance.deleteMany({});
-    res.json({ message: 'All attendance records cleared.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Error clearing attendance' });
-  }
+  if (req.body?.confirm !== CLEAR_CONFIRMATION) throw badRequest(`Type "${CLEAR_CONFIRMATION}" to confirm`);
+  const result = await Attendance.deleteMany({});
+  await audit(req, 'attendance.cleared', { details: { deleted: result.deletedCount } });
+  res.json({ message: `Deleted ${result.deletedCount} attendance records.` });
 };
 
-module.exports = { markAttendance, getAttendance, getStudentAttendance, clearAllAttendance };
+module.exports = {
+  getAttendance, getMyAttendance, getStudentAttendance, markManual, markLegacy,
+  getReviewQueue, reviewRecord, clearAllAttendance, CLEAR_CONFIRMATION,
+};

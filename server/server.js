@@ -1,46 +1,38 @@
-const express = require('express');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const morgan = require('morgan');
 const path = require('path');
-const connectDB = require('./config/db');
+const dotenv = require('dotenv');
 
-// Load env vars
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Connect to database
-connectDB();
+const connectDB = require('./config/db');
+const { createApp } = require('./app');
+const { seedDemoAccounts, warnAboutDefaultPasswords } = require('./lib/demo');
 
-const app = express();
+const start = async () => {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    console.error('JWT_SECRET must be set to a random value of at least 32 characters. See server/.env.example.');
+    process.exit(1);
+  }
+  if (!process.env.MONGO_URI) {
+    console.error('MONGO_URI is not set. See server/.env.example.');
+    process.exit(1);
+  }
 
-// Body parser
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  await connectDB();
 
-// Dev logging
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-}
+  if (process.env.FRAMS_SEED_DEMO === 'true') {
+    await seedDemoAccounts();
+    console.warn('[DEMO] Demo mode is ON. Do not use this configuration with real people.');
+  } else {
+    await warnAboutDefaultPasswords();
+  }
 
-// Enable CORS
-app.use(cors());
-
-// Mount routers
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/users', require('./routes/userRoutes'));
-app.use('/api/attendance', require('./routes/attendanceRoutes'));
-
-// Error handling
-app.use((err, req, res, next) => {
-  const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-  res.status(statusCode).json({
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+  const PORT = process.env.PORT || 5000;
+  createApp().listen(PORT, () => {
+    console.log(`FRAMS API listening on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
   });
-});
+};
 
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+start().catch((err) => {
+  console.error('Failed to start:', err.message);
+  process.exit(1);
 });

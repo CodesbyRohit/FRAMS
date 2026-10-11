@@ -1,16 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const { markAttendance, getAttendance, getStudentAttendance, clearAllAttendance } = require('../controllers/attendanceController');
-const { protect, faculty } = require('../middleware/authMiddleware');
+const c = require('../controllers/attendanceController');
+const { protect, admin, faculty } = require('../middleware/authMiddleware');
 
 router.route('/')
-  .get(protect, faculty, getAttendance)
-  .post(markAttendance);
+  .get(protect, faculty, c.getAttendance)
+  .post(protect, faculty, c.markManual);
 
-router.post('/mark', markAttendance);
-
-router.delete('/clear', protect, faculty, clearAllAttendance); // Faculty/Admin can clear
-
-router.get('/student/:id', protect, getStudentAttendance);
+router.post('/mark', c.markLegacy);
+router.get('/me', protect, c.getMyAttendance);
+router.get('/review-queue', protect, faculty, c.getReviewQueue);
+router.patch('/:id/review', protect, faculty, c.reviewRecord);
+router.delete('/clear', protect, admin, c.clearAllAttendance);
+router.get('/student/:id', protect, c.getStudentAttendance);
 
 module.exports = router;
