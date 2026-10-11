@@ -14,6 +14,8 @@ import { Card, Notice, PageHeader, Pill, StatusPill } from '../ui';
 const DETECT_INTERVAL_MS = 150;
 const RESULT_HOLD_MS = 6000;
 const FACE_LOST_RESET_MS = 1200;
+// Shown until the first detection pass completes (the first inference can take seconds).
+const SEARCHING = { code: 'searching', text: 'Looking for a face…' };
 
 // Server decision → how the outcome panel presents it.
 const OUTCOME = {
@@ -210,7 +212,7 @@ export default function Verify() {
     setResult(null);
     setPhoto(null);
     resetTracking();
-    setQuality(null);
+    setQuality(SEARCHING);
     if (streamRef.current) {
       setPhase('scanning');
       startLoop();
@@ -243,6 +245,7 @@ export default function Verify() {
       return;
     }
     resetTracking();
+    setQuality(SEARCHING);
     setPhase('scanning');
     startLoop();
   };

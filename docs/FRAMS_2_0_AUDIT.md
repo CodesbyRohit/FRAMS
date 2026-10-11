@@ -180,3 +180,42 @@ Reason for reordering E ahead of B/C: the verification UI must reflect server de
 - Decide retention policy for `faceImage` snapshots (currently stored indefinitely as base64 in the user document).
 - Consent text at enrollment; deletion of biometric data when a user is removed (currently deletion removes the user doc, attendance rows remain with the name).
 - Do not describe blink/motion checks as anti-spoofing. They are replayable by a video.
+
+---
+
+## 8. Implementation status (branch `frams-2.0`, 2026-10-11)
+
+### Done
+- **P0-1…P0-5, P0-7…P0-9 fixed.** Backdoors removed; `/auth/register` admin-only; demo accounts only with `FRAMS_SEED_DEMO=true` (startup warns if known default passwords remain in the DB); every mutating route authenticated; user lists never include descriptors/photos; offline fake sessions/saves removed.
+- **Server-side verification** `POST /api/verify` (faculty/admin). Original thresholds and risk rules unchanged (`server/lib/biometrics.js`). Deliberate behaviour changes:
+  1. Matches with distance 0.50–0.60 and scans with behaviour below the adaptive threshold were previously silently dropped; they are now stored as `pending_review` for a human.
+  2. New review flag (not a block): two enrolled profiles within 0.05 of each other.
+  3. All risk reasons are kept (the original kept only the last).
+  4. Calendar day is decided on the server in `FRAMS_TIMEZONE`.
+- **Integrity:** unique `(userId, date)` index (`npm run check:duplicates` in `server/` lists legacy duplicates, read-only); manual entries take identity from the DB; admin-only wipes with typed confirmation.
+- **New:** review queue, correction requests, audit log, `/api/health`, login/verify rate limits, CORS allow-list, security headers, 2 MB body limit.
+- **UI:** complete redesign (see `src/index.css`, `src/ui/`), six-stage verification rail, role-specific screens, route-level code splitting.
+- **Removed endpoints (410 Gone):** `POST /api/attendance/mark`, `PUT /api/users/:id/update-behavior`. `POST /api/attendance` is now staff-only manual entry.
+
+### Verification performed
+| Check | Result |
+|---|---|
+| `npm --prefix server test` (node:test + supertest + in-memory MongoDB, synthetic data) | 35/35 pass |
+| `node --test "src/**/*.test.js"` (liveness signal logic) | 5/5 pass |
+| `npx eslint .` | 0 errors, 1 warning (unused `McuVfxIntro.jsx`) — baseline was 111 errors |
+| `vite build` | pass; initial JS 291 kB (97 kB gz), was 1,433 kB (392 kB gz) |
+| Headless Chrome journeys (admin/faculty/student, desktop 1440×900 + mobile 390×844, fake camera, camera denied, forged session) | 47/47 checks pass. Screenshots were captured but not reviewed by a human. |
+
+**Not verified:** real-face recognition end to end with a physical camera, accuracy of any kind, screen-reader behaviour, Safari/Firefox.
+
+### Owner actions required
+1. **Rotate `JWT_SECRET` and DB credentials.** The old `server/.env` is in public git history. The local secret is 21 characters; the server now requires ≥ 32 and will not start until replaced: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
+2. Change or delete `admin@`/`faculty@`/`student@frams.edu` in any existing database.
+3. Run `npm run check:duplicates` (in `server/`) before deploying so the unique index can build.
+
+### Not done / next
+- No class/course model, so faculty access cannot be scoped to their classes (shown in the UI).
+- Liveness is still browser-measured; server-side or challenge-response liveness is the next real security step.
+- JWT is kept in `localStorage`; moving to httpOnly cookies + CSRF protection is recommended.
+- Retention policy and automated deletion for enrollment photos; consent text is a checkbox only.
+- `McuVfxIntro`, `DebugPanel`, `audioService`, `observabilityService` (March work) are preserved but no longer mounted.
