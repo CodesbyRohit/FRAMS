@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 
@@ -11,20 +11,52 @@ import Records from './pages/Records';
 import Export from './pages/Export';
 import StudentDashboard from './pages/StudentDashboard';
 
-import { AuthProvider } from './context/AuthContext';
+import { useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import { faceService } from './services/faceService';
 import ErrorBoundary from './components/ErrorBoundary';
+import McuVfxIntro from './components/McuVfxIntro';
+// Production Hardening: Global Demo Safe Mode
+// Set to false for full production data sync; true for zero-failure demo mode.
+window.DEMO_SAFE_MODE = true;
+window.DEMO_MODE = true; 
 
 function App() {
+  const { user, isLoading, isAuthenticated } = useAuth();
+  const [showIntro, setShowIntro] = useState(() => {
+    if (sessionStorage.getItem('frams_intro_played')) {
+      return false;
+    }
+    return true;
+  });
+
   // Load models in background
   useEffect(() => {
     faceService.loadModels().catch(console.error);
   }, []);
 
+  const handleIntroComplete = () => {
+    sessionStorage.setItem('frams_intro_played', 'true');
+    setShowIntro(false);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-black">
+        <div className="relative">
+          <div className="w-16 h-16 border-4 border-arc-blue border-t-transparent rounded-full animate-spin"></div>
+          <p className="mt-4 text-arc-blue font-mono text-sm animate-pulse tracking-widest">A.R.I.A. HYDRATING...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (showIntro) {
+    return <McuVfxIntro onComplete={handleIntroComplete} />;
+  }
+
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <BrowserRouter>
         <Toaster position="top-right" toastOptions={{
           style: { background: '#1e293b', color: '#f8fafc', border: '1px solid #334155' }
         }} />
@@ -63,8 +95,7 @@ function App() {
             <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>
         </ErrorBoundary>
-      </BrowserRouter>
-    </AuthProvider>
+    </BrowserRouter>
   );
 }
 

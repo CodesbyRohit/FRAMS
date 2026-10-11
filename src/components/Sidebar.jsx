@@ -24,7 +24,8 @@ const Sidebar = () => {
     { to: '/export', icon: Download, label: 'Export Data', roles: ['admin'] },
   ];
 
-  const filteredLinks = allLinks.filter(link => link.roles.includes(user?.role));
+  const userRole = (user?.role || 'guest').toLowerCase();
+  const filteredLinks = allLinks.filter(link => link.roles.includes(userRole));
 
   const getRoleIcon = () => {
     switch(user?.role) {
@@ -51,38 +52,49 @@ const Sidebar = () => {
           <NavLink
             key={link.to}
             to={link.to}
+            className="sidebar-link"
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
               gap: '0.75rem',
               padding: '0.75rem 1rem',
-              borderRadius: '0.5rem',
-              color: isActive ? 'var(--text-main)' : 'var(--text-muted)',
-              backgroundColor: isActive ? 'var(--accent-blue)' : 'transparent',
+              borderRadius: '0.25rem',
+              color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)',
+              backgroundColor: isActive ? 'rgba(34, 211, 238, 0.05)' : 'transparent',
+              borderLeft: isActive ? '3px solid var(--accent-blue)' : '3px solid transparent',
               textDecoration: 'none',
-              fontWeight: 500,
-              transition: 'all 0.2s'
+              fontWeight: isActive ? 600 : 500,
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              position: 'relative',
+              overflow: 'hidden',
+              boxShadow: isActive ? 'inset 10px 0 20px -10px rgba(34, 211, 238, 0.2)' : 'none'
             })}
           >
-            <link.icon size={20} />
-            {link.label}
+            {({ isActive }) => (
+              <>
+                <link.icon size={20} className={isActive ? 'animate-pulse' : ''} style={{ filter: isActive ? 'drop-shadow(0 0 5px rgba(34,211,238,0.5))' : 'none' }} />
+                <span style={{ textTransform: 'uppercase', letterSpacing: '0.5px', fontSize: '0.875rem' }}>{link.label}</span>
+                {isActive && (
+                  <div style={{ position: 'absolute', right: '1rem', width: '4px', height: '4px', backgroundColor: 'var(--accent-blue)', borderRadius: '50%', boxShadow: '0 0 8px var(--accent-blue)' }} />
+                )}
+              </>
+            )}
           </NavLink>
         ))}
       </nav>
 
       <div style={{ padding: '1.5rem', borderTop: '1px solid var(--border-color)' }}>
-        <div className="glass-panel" style={{ 
+        <div className="glow-low" style={{ 
           padding: '1rem', 
-          borderRadius: '0.75rem', 
+          borderRadius: '0.25rem', 
           display: 'flex', 
           alignItems: 'center', 
           gap: '0.75rem',
-          backgroundColor: 'rgba(59, 130, 246, 0.05)',
-          border: '1px solid rgba(59, 130, 246, 0.1)'
+          backgroundColor: 'rgba(0, 0, 0, 0.5)'
         }}>
           <div style={{ color: 'var(--accent-blue)' }}>{getRoleIcon()}</div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-main)', fontWeight: 600 }}>
-            {(user?.role || 'Guest')?.toUpperCase()} MODE
+          <div style={{ fontSize: '0.75rem', color: 'var(--accent-blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>
+            {user?.role || 'GUEST'} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>[MODE]</span>
           </div>
         </div>
       </div>

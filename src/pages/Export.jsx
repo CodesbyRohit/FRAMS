@@ -118,47 +118,51 @@ const Export = () => {
   return (
     <div className="animate-fade-in">
       <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '0.5rem' }}>Data Export</h1>
-        <p style={{ color: 'var(--text-muted)' }}>Export accurate database records and academic templates.</p>
+        <h1 className="text-glow-arc" style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-main)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+           Data Extraction
+        </h1>
+        <p style={{ color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>
+           SYSTEM.IO // EXPORT_PROTOCOLS_READY
+        </p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
-          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem' }}>
+        <div className="glow-low" style={{ background: 'var(--bg-card)', padding: '2rem', borderRadius: '0.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', border: '1px solid var(--border-color)' }}>
+          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(34, 211, 238, 0.1)', color: 'var(--accent-blue)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem', boxShadow: '0 0 15px rgba(34, 211, 238, 0.3)' }}>
             <GraduationCap size={32} />
           </div>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem' }}>Student Attendance</h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '2rem' }}>
-            Daily attendance logs for all registered students.
+          <h3 className="text-glow-arc" style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-main)', textTransform: 'uppercase', fontFamily: 'var(--hud-font)' }}>Student Data</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '2rem', fontFamily: 'var(--hud-font)' }}>
+            RECON_LOGS: PERSONNEL_ATTENDANCE
           </p>
           <button onClick={handleExportStudents} className="btn-primary" style={{ width: '100%', maxWidth: '200px' }}>
-            <FileDown size={18} /> Download CSV
+             EXTRACT CSV
           </button>
         </div>
 
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
-          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem' }}>
+        <div className="glow-low" style={{ background: 'var(--bg-card)', padding: '2rem', borderRadius: '0.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', border: '1px solid var(--border-color)' }}>
+          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(34, 211, 238, 0.1)', color: 'var(--accent-blue)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem', boxShadow: '0 0 15px rgba(34, 211, 238, 0.3)' }}>
             <UserCheck size={32} />
           </div>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem' }}>Registered Students</h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '2rem' }}>
-            Complete list of students in the biometric database.
+          <h3 className="text-glow-arc" style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--text-main)', textTransform: 'uppercase', fontFamily: 'var(--hud-font)' }}>Registry List</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '2rem', fontFamily: 'var(--hud-font)' }}>
+            RECON_LOGS: IDENT_DATABASE
           </p>
           <button onClick={handleExportStudentList} className="btn-primary" style={{ width: '100%', maxWidth: '200px' }}>
-            <FileDown size={18} /> Download CSV
+             EXTRACT CSV
           </button>
         </div>
 
-        <div className="glass-panel" style={{ padding: '2rem', borderRadius: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
-          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#10b981', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem' }}>
+        <div className="glow-low" style={{ background: 'var(--bg-card)', padding: '2rem', borderRadius: '0.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', border: '1px solid var(--stark-green)' }}>
+          <div style={{ width: '64px', height: '64px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--stark-green)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1.5rem', boxShadow: '0 0 15px rgba(16, 185, 129, 0.3)' }}>
             <Users size={32} />
           </div>
-          <h3 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem' }}>Faculty & Admins</h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '2rem' }}>
-            Attendance logs for administrative and faculty staff.
+          <h3 className="text-glow-arc" style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '0.5rem', color: 'var(--stark-green)', textTransform: 'uppercase', fontFamily: 'var(--hud-font)' }}>Admin Staff</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '2rem', fontFamily: 'var(--hud-font)' }}>
+            RECON_LOGS: CLEARANCE_PERS
           </p>
-          <button onClick={handleExportFacultyAdmin} className="btn-primary" style={{ width: '100%', maxWidth: '200px', backgroundColor: '#10b981' }}>
-            <FileDown size={18} /> Download CSV
+          <button onClick={handleExportFacultyAdmin} className="btn-primary" style={{ width: '100%', maxWidth: '200px', backgroundColor: 'var(--stark-green)', borderColor: 'var(--stark-green)' }}>
+             EXTRACT CSV
           </button>
         </div>
       </div>

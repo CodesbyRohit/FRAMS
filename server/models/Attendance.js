@@ -8,6 +8,9 @@ const attendanceSchema = new mongoose.Schema({
   time: { type: String, required: true }, // Format: HH:MM:SS
   confidenceScore: { type: Number, required: true },
   status: { type: String, enum: ['present', 'unknown'], default: 'present' },
+  riskLevel: { type: String, enum: ['LOW', 'MEDIUM', 'HIGH'], default: 'LOW' },
+  riskScore: { type: Number, default: 0 },
+  riskReason: { type: String, default: 'Normal behavior' },
   createdAt: { type: Date, default: Date.now }
 });
 

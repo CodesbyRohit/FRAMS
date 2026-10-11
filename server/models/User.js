@@ -11,6 +11,18 @@ const userSchema = new mongoose.Schema({
   researchPapers: { type: Number, required: false, default: 0 },
   faceDescriptor: { type: [Number], required: false },
   faceImage: { type: String, required: false }, // Base64 or URL
+  behaviorProfile: {
+    blinkRate: { type: Number, default: 0 },
+    movementPattern: { type: Number, default: 0 },
+    stabilityScore: { type: Number, default: 0 },
+    avgScanTime: { type: Number, default: 0 },
+    adaptiveThreshold: { type: Number, default: 0.75 }
+  },
+  riskProfile: {
+    avgBehaviorScore: { type: Number, default: 0.8 },
+    avgScanTime: { type: Number, default: 2000 },
+    anomalyCount: { type: Number, default: 0 }
+  },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -19,8 +31,12 @@ userSchema.pre('save', async function() {
     return;
   }
   
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+  } catch (err) {
+    throw err;
+  }
 });
 
 userSchema.methods.matchPassword = async function(enteredPassword) {

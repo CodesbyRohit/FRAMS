@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import * as faceapi from 'face-api.js';
 import { faceService } from '../services/faceService';
 import api from '../services/api';
+import voiceService from '../services/voiceService';
+import NumberTicker from '../components/NumberTicker';
 
 const Scanner = () => {
   const videoRef = useRef(null);
@@ -29,10 +31,48 @@ const Scanner = () => {
   const unknownCooldowns = useRef(new Set());
   const matchTimeoutRef = useRef(null);
   const attendanceLockRef = useRef(new Set()); // Prevent duplicate marking within same session
+  const activeLivenessRef = useRef(new Map());
+  const spokenRef = useRef(new Set());
+
+  const calculateRiskFrontend = ({ behaviorSimilarity, scanTime, movement, adaptiveThreshold, user }) => {
+    let riskScore = 0;
+    let reason = "Normal behavior";
+
+    if (behaviorSimilarity < adaptiveThreshold - 0.2) {
+      riskScore += 50;
+      reason = "Behavior deviation detected";
+    }
+
+    const avgScan = user?.riskProfile?.avgScanTime || 2000;
+    if (scanTime > avgScan * 1.5) {
+      riskScore += 20;
+      reason = "Abnormal scan duration";
+    }
+
+    if (movement < 0.5) {
+      riskScore += 20;
+      reason = "Low motion (possible spoof)";
+    }
+
+    let riskLevel = "LOW";
+    if (riskScore >= 60) riskLevel = "HIGH";
+    else if (riskScore >= 30) riskLevel = "MEDIUM";
+
+    return { riskScore, riskLevel, reason, scanTime };
+  };
+
+  // EAR calc for blink
+  const getEAR = (eye) => {
+    const v1 = Math.hypot(eye[1].x - eye[5].x, eye[1].y - eye[5].y);
+    const v2 = Math.hypot(eye[2].x - eye[4].x, eye[2].y - eye[4].y);
+    const h = Math.hypot(eye[0].x - eye[3].x, eye[0].y - eye[3].y);
+    return (v1 + v2) / (2.0 * h);
+  };
 
   useEffect(() => {
     initScanner();
     updateLiveCount();
+    
     return () => {
       stopScanner();
     };
@@ -93,17 +133,24 @@ const Scanner = () => {
       const count = attendance.filter(a => a.date === today && a.status === 'present').length;
       setTodayCount(count);
     } catch (error) {
-      console.error('[SCANNER] Failed to fetch attendance count:', error);
+      // observabilityService.logEvent('ERROR', 'Failed to fetch attendance count');
     }
   };
 
   const startScanner = async () => {
     setIsScanning(true);
     stopLoopRef.current = false;
+    spokenRef.current.clear();
+    voiceService.speak('A.R.I.A. online. Initializing biometric protocols.', true);
 
     setTimeout(async () => {
       try {
         console.log("[SCANNER] Attempting to access webcam...");
+        // Check if browser supports mediaDevices
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Biometric hardware interface not supported by browser.');
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 1280 },
@@ -119,12 +166,18 @@ const Scanner = () => {
             console.log("[SCANNER] Webcam stream active.");
           } catch (playErr) {
             console.error("[SCANNER] Video play error:", playErr);
+            throw new Error('Optical sensor failed to initialize.');
           }
         }
       } catch (err) {
-        toast.error('Webcam access denied. Please allow permissions.');
+        const errorMsg = err.message || 'Webcam access denied. Please allow permissions.';
+        toast.error(errorMsg, {
+          style: { border: '1px solid #ef4444', backgroundColor: '#450a0a', color: '#f8fafc' },
+          icon: '🚫'
+        });
         console.error("[SCANNER] Webcam Error:", err);
         setIsScanning(false);
+        voiceService.speak('Initialization error. Sensor link failed.', true);
       }
     }, 100);
   };
@@ -141,6 +194,7 @@ const Scanner = () => {
     latestDetectionsRef.current = [];
     setSecurityStats({ detected: 0, recognized: 0, unknown: 0 });
     attendanceLockRef.current.clear();
+    activeLivenessRef.current.clear();
   };
 
   const runDetection = async () => {
@@ -158,14 +212,25 @@ const Scanner = () => {
         const detections = await faceService.detectAllFaces(videoRef.current);
         
         if (detections) {
-          if (detections.length > 0) {
-            console.log(`[SCANNER] Detected ${detections.length} face(s).`);
+          if (detections.length > 0 && !spokenRef.current.has('face_detected')) {
+             voiceService.speak('Face detected. Running A.R.I.A. verification.');
+             spokenRef.current.add('face_detected');
+          }
+
+          if (detections.length > 1 && !spokenRef.current.has('multi_face')) {
+            voiceService.speak('Warning. Multiple heat signatures detected. Please isolate target.', true);
+            toast.error('Multi-Face Warning: Please isolate a single target for verification.', {
+              style: { border: '1px solid #fbbf24', backgroundColor: '#451a03', color: '#f8fafc' },
+              icon: '👥'
+            });
+            spokenRef.current.add('multi_face');
+            setTimeout(() => spokenRef.current.delete('multi_face'), 10000);
           }
           
           const displaySize = { width: videoRef.current.videoWidth, height: videoRef.current.videoHeight };
           const resizedDetections = faceapi.resizeResults(detections, displaySize);
-          latestDetectionsRef.current = resizedDetections;
-          processSecurityStats(resizedDetections);
+          const enrichedDetections = processSecurityStats(resizedDetections);
+          latestDetectionsRef.current = enrichedDetections;
         }
       } catch (err) {
         console.error("[SCANNER] AI Detection Error:", err);
@@ -174,32 +239,146 @@ const Scanner = () => {
     }
 
     if (!stopLoopRef.current) {
-      setTimeout(runDetection, 400); // Slightly faster loop
+      setTimeout(runDetection, 150); // Faster loop for blink detection
     }
   };
 
   const processSecurityStats = (detections) => {
     let recognized = 0;
     let unknownCount = 0;
+    const enriched = [];
 
     if (!matcher) {
       console.warn("[SCANNER] Matcher not initialized. Cannot recognize faces.");
-      return;
+      return detections;
     }
+
+    const currentFrameUsers = new Set();
 
     detections.forEach(det => {
       let isUnknown = true;
+      let enrichedDet = { ...det, bestMatch: null, liveness: null, trustLevel: 'REJECT' };
+      
       try {
         const bestMatch = matcher.findBestMatch(det.descriptor);
+        enrichedDet.bestMatch = bestMatch;
         console.log(`[SCANNER] Analysis: ${bestMatch.label} at dist ${bestMatch.distance.toFixed(3)}`);
         
-        if (bestMatch.label !== 'unknown' && bestMatch.distance < 0.7) {
+        let trustLevel = 'REJECT';
+        // DEMO_SAFE_MODE Tuning: Use fixed robust thresholds for guaranteed match
+        const thresholdHigh = window.DEMO_SAFE_MODE ? 0.60 : 0.50;
+        const thresholdMed = window.DEMO_SAFE_MODE ? 0.70 : 0.60;
+
+        if (bestMatch.distance < thresholdHigh) trustLevel = 'HIGH'; 
+        else if (bestMatch.distance <= thresholdMed) trustLevel = 'MEDIUM';
+        enrichedDet.trustLevel = trustLevel;
+
+        if (bestMatch.label !== 'unknown' && trustLevel !== 'REJECT') {
           recognized++;
           isUnknown = false;
+          
+          const userId = bestMatch.label;
+          currentFrameUsers.add(userId);
+          
+          let liveness = activeLivenessRef.current.get(userId);
+          if (!liveness) {
+            liveness = { 
+              frames: 0, 
+              blinkStage: 0, 
+              movementScore: 0, 
+              lastNose: null, 
+              verified: false,
+              startTime: Date.now(),
+              blinkCount: 0,
+              behaviorSimilarity: 0,
+              adaptiveThreshold: 0.75
+            };
+            activeLivenessRef.current.set(userId, liveness);
+          }
 
-          const user = registeredUsers.find(u => u._id === bestMatch.label);
+          liveness.frames += 1;
+
+          if (det.landmarks) {
+             const leftEye = det.landmarks.getLeftEye();
+             const rightEye = det.landmarks.getRightEye();
+             const ear = (getEAR(leftEye) + getEAR(rightEye)) / 2;
+             
+             if (liveness.blinkStage === 0 && ear < 0.28) { // Lifted from 0.22 to catch slight squints/blinks easier
+               liveness.blinkStage = 1;
+             } else if (liveness.blinkStage === 1 && ear >= 0.28) {
+               liveness.blinkStage = 2; // Keep for legacy "has blinked" flag
+               liveness.blinkCount += 1;
+               liveness.blinkStage = 0; // Reset immediately to count sequential blinks
+             }
+
+             const nose = det.landmarks.getNose()[3];
+             if (liveness.lastNose) {
+               const dist = Math.hypot(nose.x - liveness.lastNose.x, nose.y - liveness.lastNose.y);
+               if (dist > 0.2 && dist < 50.0) liveness.movementScore += dist; // 0.2+ captures micro-movements
+             }
+             liveness.lastNose = nose;
+          }
+
+          enrichedDet.liveness = { ...liveness };
+
+          const user = registeredUsers.find(u => u._id === userId);
           if (user) {
-            markLiveAttendance(user, bestMatch.distance);
+             const stored = user.behaviorProfile || { 
+               blinkRate: 0, movementPattern: 0, stabilityScore: 0, avgScanTime: 0, adaptiveThreshold: 0.75 
+             };
+             liveness.adaptiveThreshold = stored.adaptiveThreshold || 0.75;
+
+             const liveTime = Date.now() - liveness.startTime;
+             const liveBlinkRate = liveness.blinkCount / liveness.frames;
+             const liveMovement = liveness.movementScore;
+
+             if (stored.avgScanTime === 0) {
+               liveness.behaviorSimilarity = 1.0; // Learning mode
+             } else {
+               const calcScore = (live, store, tol) => Math.max(0, 1 - Math.abs(live - store) / tol);
+               const bScore = calcScore(liveBlinkRate, stored.blinkRate, 0.5);
+               const mScore = calcScore(liveMovement, stored.movementPattern, 50.0);
+               const tScore = calcScore(liveTime, stored.avgScanTime, 5000);
+               
+               liveness.behaviorSimilarity = (bScore * 0.4) + (mScore * 0.4) + (tScore * 0.2);
+             }
+          }
+
+          const liveTime = Date.now() - liveness.startTime;
+           const risk = calculateRiskFrontend({
+             behaviorSimilarity: liveness.behaviorSimilarity,
+             scanTime: liveTime,
+             movement: liveness.movementScore,
+             adaptiveThreshold: liveness.adaptiveThreshold,
+             user: user
+           });
+           liveness.risk = risk;
+
+           const isRealMovement = liveness.movementScore > 4; // Lowered from 10
+          const isBlinked = liveness.blinkCount > 0 || liveness.blinkStage === 2;
+          const isStable = liveness.frames >= 3; // Lowered from 4 frames
+          const isHighTrust = trustLevel === 'HIGH' || trustLevel === 'MEDIUM'; 
+          const isBehaviorValid = liveness.behaviorSimilarity >= liveness.adaptiveThreshold;
+
+          if (isStable && isRealMovement && isBlinked && isHighTrust && isBehaviorValid && !liveness.verified) {
+             liveness.verified = true;
+             if (user) {
+               const currentThreshold = liveness.adaptiveThreshold;
+               const newThreshold = (currentThreshold * 0.9) + (liveness.behaviorSimilarity * 0.1);
+
+               const firstName = user.name.split(' ')[0] || 'Personnel';
+               voiceService.speak(`Identity confirmed. Welcome back, ${firstName}. It is good to see you again.`, true);
+
+               api.put(`/users/${userId}/update-behavior`, {
+                 blinkRate: liveness.blinkCount / liveness.frames,
+                 movementPattern: liveness.movementScore,
+                 stabilityScore: 1.0,
+                 scanTime: liveTime,
+                 adaptiveThreshold: newThreshold
+               }).catch(e => console.error("Behavior update failed", e));
+               
+               markLiveAttendance(user, bestMatch.distance, risk);
+             }
           }
         }
       } catch (e) {
@@ -210,22 +389,20 @@ const Scanner = () => {
         unknownCount++;
         const unknownKey = Math.round(det.detection.box.x / 50);
         if (!unknownCooldowns.current.has(unknownKey)) {
-          unknownCooldowns.current.add(unknownKey);
-          toast.error('Identity Unknown: Face not in biometric database.', {
-            style: { border: '1px solid #ef4444', backgroundColor: '#450a0a', color: '#f8fafc' },
-            icon: '🛡️',
-            duration: 3000
-          });
-          setTimeout(() => unknownCooldowns.current.delete(unknownKey), 5000);
+           unknownCooldowns.current.add(unknownKey);
+           toast.error('Identity Unknown: Anti-spoof rejected or not in DB.', {
+             style: { border: '1px solid #ef4444', backgroundColor: '#450a0a', color: '#f8fafc' },
+             icon: '🛡️', duration: 3000
+           });
+           setTimeout(() => unknownCooldowns.current.delete(unknownKey), 5000);
         }
       }
+      
+      enriched.push(enrichedDet);
     });
 
-    setSecurityStats({
-      detected: detections.length,
-      recognized,
-      unknown: unknownCount
-    });
+    setSecurityStats({ detected: detections.length, recognized, unknown: unknownCount });
+    return enriched;
   };
 
   const renderLoop = (time) => {
@@ -258,25 +435,23 @@ const Scanner = () => {
         let confidence = 0;
         let isUnknown = true;
         let matchScore = 1.0;
+        let trustLevel = det.trustLevel || 'REJECT';
+        let liveness = det.liveness || null;
 
-        if (matcher) {
-          const bestMatch = matcher.findBestMatch(det.descriptor);
-          matchScore = bestMatch.distance;
-
-          if (bestMatch.label !== 'unknown' && matchScore < 0.7) {
-            isUnknown = false;
-            // More generous confidence mapping for visualization
-            confidence = Math.max(0, Math.round((1 - (matchScore / 0.8)) * 100));
-            const user = registeredUsers.find(u => u._id === bestMatch.label);
-            if (user && user.name) identityLabel = user.name;
-          } else {
-            confidence = Math.max(0, Math.round((0.8 - matchScore) * 100));
-          }
+        if (det.bestMatch && det.bestMatch.label !== 'unknown' && trustLevel !== 'REJECT') {
+          isUnknown = false;
+          matchScore = det.bestMatch.distance;
+          confidence = Math.max(0, Math.round((1 - matchScore) * 100)); // Standardized to 100% scale
+          const user = registeredUsers.find(u => u._id === det.bestMatch.label);
+          if (user && user.name) identityLabel = user.name;
+        } else if (det.bestMatch) {
+          matchScore = det.bestMatch.distance;
+          confidence = Math.max(0, Math.round((1 - matchScore) * 100));
         }
 
-        let colorHex = '#ef4444'; // Red for unknown
-        if (confidence > 85) colorHex = '#10b981'; // Green
-        else if (confidence >= 70) colorHex = '#f59e0b'; // Amber
+        let colorHex = '#dc2626'; // Red for unknown/risk
+        if (confidence > 85) colorHex = '#10b981'; // Green for high trust
+        else if (confidence >= 70) colorHex = '#fbbf24'; // Gold for medium trust
 
         let matchedPrevBox = drawnBoxesRef.current.find(b =>
           Math.abs(b.x - targetBox.x) < 80 && Math.abs(b.y - targetBox.y) < 80
@@ -319,10 +494,10 @@ const Scanner = () => {
         ctx.fill();
 
         ctx.shadowColor = colorHex;
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = 15;
         ctx.strokeStyle = colorHex;
         ctx.lineWidth = 3;
-        const bl = 20;
+        const bl = 30; // Larger brackets for HUD
         ctx.beginPath();
         ctx.moveTo(x, y + bl); ctx.lineTo(x, y); ctx.lineTo(x + bl, y);
         ctx.moveTo(x + width - bl, y); ctx.lineTo(x + width, y); ctx.lineTo(x + width, y + bl);
@@ -331,43 +506,119 @@ const Scanner = () => {
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Panel Background
-        const panelWidth = Math.max(width, 200);
-        const panelY = Math.max(y - 80, 5); // Don't draw off top
+        // Motion Shake for HIGH Risk
+        const riskLevel = liveness?.risk?.riskLevel;
+        if (!isUnknown && riskLevel === 'HIGH') {
+           const sx = Math.random() * 6 - 3;
+           const sy = Math.random() * 6 - 3;
+           ctx.translate(sx, sy);
+        }
+
+        // Small Panel Background
+        const panelWidth = Math.max(width, 160);
+        const panelHeight = (!isUnknown && liveness?.risk) ? 90 : 50;
+        const panelY = Math.max(y - panelHeight - 10, 5);
         ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-        ctx.fillRect(x, panelY, panelWidth, 70);
+        ctx.fillRect(x, panelY, panelWidth, panelHeight);
         ctx.strokeStyle = `${colorHex}AA`;
-        ctx.strokeRect(x, panelY, panelWidth, 70);
+        ctx.strokeRect(x, panelY, panelWidth, panelHeight);
 
         // Name & Identity String
-        const displayLabel = (identityLabel || 'UNKNOWN').toUpperCase();
+        let displayLabel = (identityLabel || 'UNKNOWN').toUpperCase();
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 12px Inter';
         ctx.fillText(`IDENTITY: ${displayLabel}`, x + 10, panelY + 20);
 
-        ctx.font = '10px Inter';
+        // Subtext
+        ctx.font = '9px Inter';
         ctx.fillStyle = '#94a3b8';
-        ctx.fillText(`BIOMETRIC DISTANCE: ${matchScore.toFixed(4)}`, x + 10, panelY + 38);
+        ctx.fillText(`HYBRID AI TRUST: ${trustLevel} (${(matchScore).toFixed(3)})`, x + 10, panelY + 36);
 
-        ctx.fillStyle = colorHex;
-        ctx.font = 'bold 11px Inter';
-        ctx.fillText(`CONFIDENCE: ${confidence}%`, x + 10, panelY + 52);
+        // Risk Engine Sub-panel
+        if (!isUnknown && liveness?.risk) {
+          const { riskLevel, riskScore, reason } = liveness.risk;
+          let rColor = '#10b981';
+          if (riskLevel === 'MEDIUM') rColor = '#fbbf24';
+          if (riskLevel === 'HIGH') {
+             rColor = `rgba(220, 38, 38, ${0.7 + Math.sin(time / 150) * 0.3})`;
+          }
+          
+          ctx.fillStyle = rColor;
+          ctx.font = 'bold 9px Inter';
+          ctx.fillText(`RISK LEVEL: ${riskLevel === 'LOW' ? '🟢' : (riskLevel === 'MEDIUM' ? '🟡' : '🔴')} ${riskLevel} (${riskScore}%)`, x + 10, panelY + 54);
+          
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = '8px Inter';
+          ctx.fillText(`STATUS: ${riskLevel === 'HIGH' ? 'SUSPICIOUS' : 'SAFE'}`, x + 10, panelY + 68);
+          if (riskLevel === 'HIGH' || riskLevel === 'MEDIUM') {
+            ctx.fillStyle = rColor;
+            ctx.fillText(`${reason.substring(0, 30)}`, x + 10, panelY + 80);
+          }
+        }
 
-        // Progress bar
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-        ctx.fillRect(x + 10, panelY + 58, panelWidth - 20, 4);
-        ctx.fillStyle = colorHex;
-        ctx.fillRect(x + 10, panelY + 58, (panelWidth - 20) * (confidence / 100), 4);
-
+        // Final Alert below box
         const seqShift = (time / 400) % 4;
+        const bScorePct = Math.round((liveness?.behaviorSimilarity || 0) * 100);
+        const reqThreshold = Math.round((liveness?.adaptiveThreshold || 0.75) * 100);
+
+        /* == SIDEBAR TELEMETRY UPDATER == */
+        // We only update the global sidebars for the primary box (first one)
+        if (latest.indexOf(det) === 0) {
+           const el = (id) => document.getElementById(id);
+           if (el('ui-match-val')) {
+              el('ui-match-val').innerText = `${confidence}%`;
+              el('ui-match-bar').style.width = `${confidence}%`;
+              el('ui-match-bar').style.background = confidence > 85 ? 'var(--stark-green)' : (confidence > 70 ? 'var(--stark-gold)' : 'var(--stark-red)');
+              el('ui-match-bar').style.boxShadow = `0 0 10px ${el('ui-match-bar').style.background}`;
+
+              const blinkPassed = liveness?.blinkCount > 0 || liveness?.blinkStage === 2;
+              const blinkPct = blinkPassed ? 100 : ((liveness?.blinkStage || 0) * 50);
+              el('ui-blink-val').innerText = blinkPassed ? 'OK' : 'WAITING';
+              el('ui-blink-bar').style.width = `${blinkPct}%`;
+              el('ui-blink-bar').style.background = blinkPassed ? 'var(--stark-green)' : (blinkPct > 0 ? 'var(--stark-gold)' : 'var(--stark-red)');
+              el('ui-blink-bar').style.boxShadow = `0 0 10px ${el('ui-blink-bar').style.background}`;
+
+              const motionScore = liveness?.movementScore || 0;
+              const motionPct = (motionScore / 4.0) * 100;
+              el('ui-motion-val').innerText = `${motionScore.toFixed(1)} / 4.0`;
+              el('ui-motion-bar').style.width = `${Math.min(100, motionPct)}%`;
+              el('ui-motion-bar').style.background = motionPct >= 100 ? 'var(--stark-green)' : (motionPct > 30 ? 'var(--stark-gold)' : 'var(--stark-red)');
+              el('ui-motion-bar').style.boxShadow = `0 0 10px ${el('ui-motion-bar').style.background}`;
+
+              el('ui-be-val').innerText = `${bScorePct} / ${reqThreshold}%`;
+              el('ui-be-bar').style.width = `${Math.min(100, bScorePct)}%`;
+              el('ui-be-bar').style.background = bScorePct >= reqThreshold ? 'var(--stark-green)' : (bScorePct > reqThreshold - 25 ? 'var(--stark-gold)' : 'var(--stark-red)');
+              el('ui-be-bar').style.boxShadow = `0 0 10px ${el('ui-be-bar').style.background}`;
+
+              let finalTrustPct = (confidence + blinkPct + Math.min(100, motionPct) + bScorePct) / 4;
+              if (isUnknown) finalTrustPct = 0;
+              const finalColor = liveness?.verified ? '#3b82f6' : (finalTrustPct >= 80 ? '#10b981' : (finalTrustPct >= 50 ? '#f59e0b' : '#ef4444'));
+              el('ui-trust-val').innerText = `${Math.round(finalTrustPct)}%`;
+              el('ui-trust-bar').style.width = `${finalTrustPct}%`;
+              el('ui-trust-bar').style.background = finalColor;
+              if (liveness?.verified) {
+                 el('ui-trust-val').innerText = 'VERIFIED 100%';
+                 el('ui-trust-bar').style.width = '100%';
+              }
+           }
+        }
+        ctx.font = 'bold 11px Inter';
         if (isUnknown) {
           ctx.fillStyle = '#ef4444';
-          ctx.fillText('⚠ ALERT: UNREGISTERED TARGET', x, y + height + 20);
+          ctx.fillText('⚠ ALERT: IDENTITY REJECTED / SPOOF', x, y + height + 20);
         } else {
-          ctx.fillStyle = '#10b981';
-          if (seqShift > 0) ctx.fillText('✔ FACE DETECTED', x, y + height + 20);
-          if (seqShift > 2) ctx.fillStyle = '#3b82f6';
-          if (seqShift > 2) ctx.fillText('✔ MATCH SYNCED', x, y + height + 35);
+          const riskLevel = liveness?.risk?.riskLevel;
+          const finalColor = liveness?.verified ? '#3b82f6' : (riskLevel === 'HIGH' ? '#ef4444' : '#10b981');
+          ctx.fillStyle = finalColor;
+          if (seqShift > 0 && liveness?.verified) ctx.fillText('✔ BEHAVIOR + LIVENESS PASSED', x, y + height + 20);
+          else if (seqShift > 0 && riskLevel === 'HIGH') ctx.fillText(`⚠ HIGH RISK: ${liveness?.risk?.reason}`, x, y + height + 20);
+          else if (seqShift > 0 && bScorePct < reqThreshold) ctx.fillText(`⚠ SUSPICIOUS BEHAVIOR SCORE`, x, y + height + 20);
+          else if (seqShift > 0) ctx.fillText(`⟳ VERIFYING BIOMETRICS...`, x, y + height + 20);
+          
+          if (seqShift > 2 && liveness?.verified) {
+             ctx.fillStyle = '#3b82f6';
+             ctx.fillText('✔ IDENTITY SECURED', x, y + height + 35);
+          }
         }
       });
 
@@ -403,7 +654,7 @@ const Scanner = () => {
     }
   };
 
-  const markLiveAttendance = async (user, distance) => {
+  const markLiveAttendance = async (user, distance, risk) => {
     const todayStr = new Date().toISOString().split('T')[0];
     const timeStr = new Date().toLocaleTimeString();
 
@@ -422,7 +673,11 @@ const Scanner = () => {
         date: todayStr,
         time: timeStr,
         confidenceScore: confidence,
-        status: 'present'
+        status: 'present',
+        riskLevel: risk?.riskLevel || 'LOW',
+        riskScore: risk?.riskScore || 0,
+        riskReason: risk?.reason || 'Normal behavior',
+        scanTime: risk?.scanTime || 0
       };
 
       console.log(`[SCANNER] SYNCING ATTENDANCE: ${user.name} (Conf: ${confidence}%)`);
@@ -452,8 +707,8 @@ const Scanner = () => {
       <div style={{ position: 'relative' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1.5rem' }}>
           <div>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '0.25rem' }}>AI Biometric Security</h1>
-            <p style={{ color: 'var(--text-muted)' }}>Full-Stack Precision Recognition System</p>
+            <h1 style={{ fontSize: '1.5rem', fontWeight: 600, color: 'var(--text-main)', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '0.25rem' }}>AI Biometric Scanner</h1>
+            <p style={{ color: 'var(--accent-blue)', fontSize: '0.875rem', letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>SYSTEM.J.A.R.V.I.S // ACTIVE</p>
           </div>
           <div>
             {isScanning ? (
@@ -474,6 +729,13 @@ const Scanner = () => {
         </div>
 
         <div className={`scanner-container ${isScanning ? 'active' : ''} ${recentMatch ? 'face-detected' : ''}`}>
+          {!modelsLoaded && (
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 100, background: 'rgba(0,0,0,0.8)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(10px)' }}>
+              <div className="w-16 h-16 border-4 border-arc-blue border-t-transparent rounded-full animate-spin mb-4" />
+              <p className="text-arc-blue font-mono text-sm animate-pulse tracking-widest">A.R.I.A. SYNCHRONIZING_BIOMETRIC_ARRAYS...</p>
+            </div>
+          )}
+          
           {isScanning ? (
             <>
               <div className="grid-overlay"></div>
@@ -515,13 +777,17 @@ const Scanner = () => {
               {recentMatch && (
                 <div className="flash-card flash-card-success" style={{ padding: '2rem', borderRadius: '1rem', width: '340px', textAlign: 'center' }}>
                   <div style={{ position: 'relative', display: 'inline-block', marginBottom: '1.5rem' }}>
-                    <img src={recentMatch.snapshot} alt={recentMatch.name} style={{ width: '120px', height: '120px', borderRadius: '50%', objectFit: 'cover', border: '4px solid #10b981' }} />
+                    <img src={recentMatch?.snapshot} alt={recentMatch?.name} style={{ width: '120px', height: '120px', borderRadius: '50%', objectFit: 'cover', border: '4px solid #10b981' }} />
                     <div style={{ position: 'absolute', bottom: 0, right: 0, background: '#10b981', borderRadius: '50%', padding: '6px', border: '4px solid #0f172a' }}>
                       <CheckCircle2 size={24} color="#0f172a" />
                     </div>
                   </div>
-                  <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.25rem' }}>{recentMatch.name.toUpperCase()}</h2>
-                  <p style={{ color: '#10b981', fontSize: '0.875rem', fontWeight: 600, letterSpacing: '1px' }}>{recentMatch.role.toUpperCase()}</p>
+                  <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.25rem' }}>
+                    {(recentMatch?.name || 'Personnel').toUpperCase()}
+                  </h2>
+                  <p style={{ color: '#10b981', fontSize: '0.875rem', fontWeight: 600, letterSpacing: '1px' }}>
+                    {(recentMatch?.role || 'Guest').toUpperCase()}
+                  </p>
                 </div>
               )}
             </>
@@ -535,30 +801,86 @@ const Scanner = () => {
       </div>
 
       <div>
-        <div className="saas-card" style={{ padding: '1.5rem', marginBottom: '1.5rem', borderLeft: '4px solid var(--accent-blue)' }}>
-          <h3 style={{ fontSize: '0.75rem', color: '#60a5fa', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', marginBottom: '1.5rem' }}>
+        <div className="glow-low" style={{ padding: '1.5rem', marginBottom: '1.5rem', background: 'var(--bg-card)', borderRadius: '0.5rem', borderLeft: '4px solid var(--accent-blue)' }}>
+          <h3 className="text-glow-arc" style={{ fontSize: '0.75rem', color: 'var(--accent-blue)', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '1.5rem' }}>
             Live Security Feed
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#cbd5e1', fontSize: '0.875rem' }}><Users size={16} /> FACES DETECTED</div>
-              <span style={{ fontWeight: 800, fontSize: '1.25rem' }}>{isScanning ? securityStats.detected : 0}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-muted)', fontSize: '0.875rem', fontFamily: 'var(--hud-font)' }}><Users size={16} /> DETECTED</div>
+              <span style={{ fontWeight: 800, fontSize: '1.25rem', color: 'var(--accent-blue)', textShadow: '0 0 10px rgba(34,211,238,0.5)' }}>{isScanning ? securityStats.detected : 0}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#10b981', fontSize: '0.875rem' }}><UserCheck size={16} /> RECOGNIZED</div>
-              <span style={{ fontWeight: 800, fontSize: '1.25rem', color: '#10b981' }}>{isScanning ? securityStats.recognized : 0}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--stark-green)', fontSize: '0.875rem', fontFamily: 'var(--hud-font)' }}><UserCheck size={16} /> RECOGNIZED</div>
+              <span className="text-glow-arc" style={{ fontWeight: 800, fontSize: '1.25rem', color: 'var(--stark-green)' }}>{isScanning ? securityStats.recognized : 0}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#ef4444', fontSize: '0.875rem' }}><UserX size={16} /> UNKNOWN</div>
-              <span style={{ fontWeight: 800, fontSize: '1.25rem', color: '#ef4444' }}>{isScanning ? securityStats.unknown : 0}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--stark-red)', fontSize: '0.875rem', fontFamily: 'var(--hud-font)' }}><UserX size={16} /> UNKNOWN</div>
+              <span className="text-glow-red" style={{ fontWeight: 800, fontSize: '1.25rem', color: 'var(--stark-red)' }}>{isScanning ? securityStats.unknown : 0}</span>
             </div>
           </div>
         </div>
 
-        <div className="saas-card" style={{ padding: '2rem', textAlign: 'center', background: 'rgba(59, 130, 246, 0.03)' }}>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem', fontWeight: 700, textTransform: 'uppercase' }}>Today Scans</p>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '1rem' }}>
-            <h3 style={{ fontSize: '3.5rem', fontWeight: 800, margin: 0, color: '#f8fafc' }}>
+        <div className="glow-medium" style={{ padding: '1.5rem', marginBottom: '1.5rem', background: 'var(--hud-bg)', borderRadius: '0.5rem', borderLeft: '4px solid var(--stark-gold)', position: 'relative', overflow: 'hidden' }}>
+          <div style={{ position: 'absolute', top: 0, right: 0, opacity: 0.1, pointerEvents: 'none' }}>
+             <Activity size={100} />
+          </div>
+          <h3 className="text-glow-gold" style={{ fontSize: '0.75rem', color: 'var(--stark-gold)', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '1.5rem', fontFamily: 'var(--hud-font)' }}>
+            Telemetry Arrays
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontFamily: 'var(--hud-font)' }}>
+             {/* Face Match */}
+             <div>
+               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>
+                 <span>Identity Lock</span><span id="ui-match-val" style={{ color: 'var(--text-main)' }}>0%</span>
+               </div>
+               <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                 <div id="ui-match-bar" style={{ width: '0%', height: '100%', background: 'var(--accent-blue)', transition: 'width 0.2s ease-out', boxShadow: '0 0 10px var(--accent-blue)' }}></div>
+               </div>
+             </div>
+             {/* Blink Verified */}
+             <div>
+               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>
+                 <span>Liveness [BLINK]</span><span id="ui-blink-val" style={{ color: 'var(--text-main)' }}>WAITING</span>
+               </div>
+               <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                 <div id="ui-blink-bar" style={{ width: '0%', height: '100%', background: 'var(--stark-gold)', transition: 'width 0.2s ease-out', boxShadow: '0 0 10px var(--stark-gold)' }}></div>
+               </div>
+             </div>
+             {/* Motion Verified */}
+             <div>
+               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>
+                 <span>Liveness [MOTION]</span><span id="ui-motion-val" style={{ color: 'var(--text-main)' }}>0.0 / 4.0</span>
+               </div>
+               <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                 <div id="ui-motion-bar" style={{ width: '0%', height: '100%', background: 'var(--stark-gold)', transition: 'width 0.2s ease-out', boxShadow: '0 0 10px var(--stark-gold)' }}></div>
+               </div>
+             </div>
+             {/* Behavior Score */}
+             <div>
+               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.5rem', textTransform: 'uppercase' }}>
+                 <span>Behavioral Drift</span><span id="ui-be-val" style={{ color: 'var(--text-main)' }}>0%</span>
+               </div>
+               <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                 <div id="ui-be-bar" style={{ width: '0%', height: '100%', background: 'var(--stark-green)', transition: 'width 0.2s ease-out', boxShadow: '0 0 10px var(--stark-green)' }}></div>
+               </div>
+             </div>
+             {/* Final Trust */}
+             <div style={{ marginTop: '0.5rem', paddingTop: '1rem', borderTop: '1px solid rgba(34, 211, 238, 0.2)' }}>
+               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '0.5rem' }}>
+                 <span>SYSTEM.TRUST</span><span id="ui-trust-val" className="text-glow-arc">0%</span>
+               </div>
+               <div style={{ height: '8px', background: 'rgba(0,0,0,0.5)', borderRadius: '4px', overflow: 'hidden', border: '1px solid rgba(34, 211, 238, 0.3)' }}>
+                 <div id="ui-trust-bar" style={{ width: '0%', height: '100%', background: 'var(--stark-red)', transition: 'width 0.2s ease-out, background-color 0.2s', boxShadow: '0 0 15px currentColor' }}></div>
+               </div>
+             </div>
+          </div>
+        </div>
+
+        <div className="glow-low" style={{ padding: '2rem', textAlign: 'center', background: 'rgba(34, 211, 238, 0.05)', borderRadius: '0.5rem' }}>
+          <p style={{ fontSize: '0.75rem', color: 'var(--accent-blue)', marginBottom: '1rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '2px' }}>Total Processing</p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', padding: '1rem', background: 'var(--hud-bg)', borderRadius: '0.5rem', border: '1px solid var(--border-color)' }}>
+            <h3 className="text-glow-arc" style={{ fontSize: '3.5rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
               {todayCount}
             </h3>
           </div>

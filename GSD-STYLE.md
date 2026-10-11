@@ -260,6 +260,13 @@ Option B: {description}
 Which do you prefer?
 ```
 
+### Voice Interactions (V.O.X Protocol)
+
+For biometric events, use `voiceService.speak(message, interrupt)`:
+- **Critical Alerts**: Set `interrupt: true`.
+- **Status Updates**: Set `interrupt: false` (default queue).
+
+
 ---
 
 ## Summary: Core Meta-Patterns

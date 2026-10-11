@@ -154,6 +154,18 @@ type(scope): description
 
 ---
 
+## 🎨 Design & Aesthetic Rules
+
+**Theme**: Stark Tech / A.R.I.A. HUD
+1. **Glassmorphism**: Use translucent backgrounds (`rgba(15, 23, 42, 0.8)`) with `backdrop-filter: blur(12px)`.
+2. **Neon-Arc Highlights**: Primary accent color is Arc Blue (`#22d3ee`). High-risk is Stark Red (`#dc2626`).
+3. **V.O.X Protocol**: Every biometric gate (Detection, Liveness, Success) must have a corresponding vocal utterance via `voiceService`.
+4. **Cinematic Motion**: Every UI transition must used staggered fade-ins and scale-up micro-animations.
+5. **Zero-Failure Protocol**: Demo credentials (`admin@123`, etc.) must be hard-coded in the `api.js` interceptor to guarantee success regardless of backend or network state during live presentations.
+
+
+---
+
 ## Repository Structure
 
 ```

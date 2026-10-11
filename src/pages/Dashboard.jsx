@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { 
   Users, UserCheck, GraduationCap, Activity, 
   ArrowUpRight, ArrowRight, Camera, FileText, UserPlus, Minus,
-  Shield, ShieldCheck, Trash2, RefreshCcw, Loader2
+  Shield, ShieldCheck, ShieldAlert, Trash2, RefreshCcw, Loader2, UserX
 } from 'lucide-react';
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -18,24 +18,27 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b']; // Blue, Emerald, Amber
 
 const DashboardCard = ({ title, value, icon: Icon, color, trend }) => {
   return (
-    <div className="saas-card animate-fade-in">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+    <div className="glow-low animate-fade-in" style={{ background: 'var(--bg-card)', padding: '1.5rem', borderRadius: '0.5rem', borderLeft: `4px solid ${color}`, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', top: 0, right: 0, opacity: 0.05, pointerEvents: 'none', transform: 'translate(20%, -20%)' }}>
+         <Icon size={120} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative', zIndex: 1 }}>
         <div>
-          <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.5px', fontFamily: 'var(--hud-font)', marginBottom: '0.5rem' }}>
             {title}
           </p>
-          <div className="stat-value">
+          <div className="stat-value" style={{ fontSize: '2.5rem', fontWeight: 800, color: 'var(--text-main)', textShadow: `0 0 15px ${color}40` }}>
             <NumberTicker value={value} />
           </div>
         </div>
-        <div style={{ backgroundColor: `${color}15`, color: color, padding: '0.75rem', borderRadius: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Icon size={24} />
+        <div style={{ color: color, filter: `drop-shadow(0 0 8px ${color})` }}>
+          <Icon size={28} />
         </div>
       </div>
-      <div style={{ marginTop: '0.5rem' }}>
-        <span className={`trend-indicator ${trend > 0 ? 'trend-up' : 'trend-neutral'}`}>
+      <div style={{ marginTop: '1rem', position: 'relative', zIndex: 1 }}>
+        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: trend > 0 ? 'var(--stark-green)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'var(--hud-font)' }}>
           {trend > 0 ? <ArrowUpRight size={14} /> : <Minus size={14} />}
-          {trend > 0 ? `${trend} Today` : 'Stable'}
+          {trend > 0 ? `+${trend} CYCLIC INCREASE` : 'STABLE SIGNAL'}
         </span>
       </div>
     </div>
@@ -54,7 +57,11 @@ const Dashboard = () => {
     recentScans: [],
     trendData: [],
     roleDistribution: [],
-    allUsers: []
+    allUsers: [],
+    totalAnomalies: 0,
+    highRiskAttempts: 0,
+    riskDistribution: [],
+    riskTrendData: []
   });
 
   const fetchDashboardData = async () => {
@@ -75,15 +82,15 @@ const Dashboard = () => {
       const today = new Date().toISOString().split('T')[0];
 
       // Process Stats
-      const todayAttendance = attendance.filter(a => a.date === today);
-      const studentAttendance = todayAttendance.filter(a => a.role === 'student').length;
-      const facultyAttendance = todayAttendance.filter(a => a.role === 'faculty' || a.role === 'admin').length;
+      const todayAttendance = (attendance || []).filter(a => a?.date === today);
+      const studentAttendance = todayAttendance.filter(a => a?.role === 'student').length;
+      const facultyAttendance = todayAttendance.filter(a => a?.role === 'faculty' || a?.role === 'admin').length;
 
       // Distribution
       const roles = ['student', 'faculty', 'admin'];
       const distribution = roles.map(role => ({
         name: role.charAt(0).toUpperCase() + role.slice(1),
-        value: users.filter(u => u.role === role).length
+        value: (users || []).filter(u => u?.role === role).length
       })).filter(d => d.value > 0);
 
       // Trend Data (Last 7 days)
@@ -95,18 +102,48 @@ const Dashboard = () => {
 
       const trendData = last7Days.map(date => ({
         name: new Date(date).toLocaleDateString(undefined, { weekday: 'short' }),
-        Attendance: attendance.filter(a => a.date === date).length
+        Attendance: (attendance || []).filter(a => a?.date === date).length
       }));
 
+      // Risk Metrics Integration
+      let totalAnomalies = 0;
+      (users || []).forEach(u => {
+        if (u?.riskProfile?.anomalyCount) totalAnomalies += u.riskProfile.anomalyCount;
+      });
+
+      const highRiskAttempts = (attendance || []).filter(a => (a?.riskLevel || 'LOW') === 'HIGH').length;
+
+      const riskLevels = ['LOW', 'MEDIUM', 'HIGH'];
+      const riskDistribution = riskLevels.map(level => ({
+        name: level,
+        value: (attendance || []).filter(a => (a?.riskLevel || 'LOW') === level).length
+      })).filter(d => d.value > 0);
+
+      const riskTrendData = last7Days.map(date => {
+        const dayAtt = (attendance || []).filter(a => a?.date === date);
+        const avgRisk = dayAtt.length > 0 
+           ? dayAtt.reduce((sum, a) => sum + (a?.riskScore || 0), 0) / dayAtt.length 
+           : 0;
+            
+        return {
+          name: new Date(date).toLocaleDateString(undefined, { weekday: 'short' }),
+          AvgRiskScore: Math.round(avgRisk)
+        };
+      });
+
       setStats({
-        totalUsers: users.length,
-        studentsPresentToday: studentAttendance,
-        facultyPresentToday: facultyAttendance,
-        attendanceToday: todayAttendance.length,
-        recentScans: attendance.slice(0, 10),
-        trendData,
-        roleDistribution: distribution,
-        allUsers: users
+        totalUsers: users?.length || 0,
+        studentsPresentToday: studentAttendance || 0,
+        facultyPresentToday: facultyAttendance || 0,
+        attendanceToday: todayAttendance?.length || 0,
+        recentScans: attendance?.slice(0, 10) || [],
+        trendData: trendData || [],
+        roleDistribution: distribution || [],
+        allUsers: users || [],
+        totalAnomalies: totalAnomalies || 0,
+        highRiskAttempts: highRiskAttempts || 0,
+        riskDistribution: riskDistribution || [],
+        riskTrendData: riskTrendData || []
       });
     } catch (error) {
       console.error('Dashboard fetch error:', error);
@@ -134,11 +171,11 @@ const Dashboard = () => {
     <div className="animate-fade-in" style={{ paddingBottom: '2rem' }}>
       <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, marginBottom: '0.25rem', color: '#f8fafc' }}>
-            AI Analytics Hub
+          <h1 className="text-glow-arc" style={{ fontSize: '1.75rem', fontWeight: 700, marginBottom: '0.25rem', color: 'var(--text-main)', letterSpacing: '2px', textTransform: 'uppercase' }}>
+            Command Center
           </h1>
-          <p style={{ color: 'var(--accent-blue)', fontSize: '0.875rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Activity size={14} className="animate-pulse" /> Live Feed Active
+          <p style={{ color: 'var(--accent-blue)', fontSize: '0.75rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>
+            <Activity size={14} className="animate-pulse" /> SYSTEM.RECON // ACTIVE
           </p>
         </div>
         
@@ -159,35 +196,16 @@ const Dashboard = () => {
       </div>
 
       {/* KPI Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
+        <DashboardCard title="Registered Profiles" value={stats.totalUsers} icon={Users} color="var(--accent-blue)" trend={0} />
+        <DashboardCard title="Active Personnel" value={stats.studentsPresentToday} icon={GraduationCap} color="var(--stark-green)" trend={stats.studentsPresentToday} />
+        <DashboardCard title="Security Clearances" value={stats.facultyPresentToday} icon={Shield} color="var(--stark-gold)" trend={stats.facultyPresentToday} />
+        <DashboardCard title="Cyclic Scans" value={stats.attendanceToday} icon={UserCheck} color="var(--accent-blue)" trend={stats.attendanceToday} />
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem', marginBottom: '2rem' }}>
-        <DashboardCard 
-          title="Registered Profiles" 
-          value={stats.totalUsers} 
-          icon={Users} 
-          color="#3b82f6" 
-          trend={0} 
-        />
-        <DashboardCard 
-          title="Students Present" 
-          value={stats.studentsPresentToday} 
-          icon={GraduationCap} 
-          color="#10b981" 
-          trend={stats.studentsPresentToday} 
-        />
-        <DashboardCard 
-          title="Faculty/Admin Present" 
-          value={stats.facultyPresentToday} 
-          icon={Shield} 
-          color="#f59e0b" 
-          trend={stats.facultyPresentToday} 
-        />
-        <DashboardCard 
-          title="Total Scans Today" 
-          value={stats.attendanceToday} 
-          icon={UserCheck} 
-          color="#8b5cf6" 
-          trend={stats.attendanceToday} 
-        />
+        <DashboardCard title="Anomalous Flags" value={stats.totalAnomalies} icon={UserX} color="var(--stark-red)" trend={stats.totalAnomalies} />
+        <DashboardCard title="High Risk Events" value={stats.highRiskAttempts} icon={ShieldAlert} color="var(--stark-red)" trend={stats.highRiskAttempts} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '1.5rem', alignItems: 'start' }}>
@@ -195,9 +213,9 @@ const Dashboard = () => {
         {/* Left Column: Charts */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
           {/* Trend Chart */}
-          <div className="saas-card" style={{ height: '400px', display: 'flex', flexDirection: 'column' }}>
-            <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1.5rem', color: '#f8fafc' }}>
-              7-Day Attendance Trend
+          <div className="glow-low" style={{ background: 'var(--bg-card)', padding: '1.5rem', borderRadius: '0.5rem', height: '400px', display: 'flex', flexDirection: 'column', border: '1px solid var(--border-color)' }}>
+            <h3 className="text-glow-arc" style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: '1.5rem', color: 'var(--accent-blue)', textTransform: 'uppercase', letterSpacing: '1.5px', fontFamily: 'var(--hud-font)' }}>
+               Reconciliation Stream // 7D
             </h3>
             <div style={{ flex: 1, width: '100%', minHeight: '300px' }}>
               <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
@@ -215,7 +233,7 @@ const Dashboard = () => {
                     contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', backdropFilter: 'blur(8px)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '0.5rem', color: '#f8fafc', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }} 
                     itemStyle={{ color: '#3b82f6', fontWeight: 600 }}
                   />
-                  <Area type="monotone" dataKey="Attendance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorAttendance)" animationDuration={1500} />
+                  <Area type="monotone" dataKey="Attendance" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorAttendance)" animationDuration={1000} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -241,7 +259,7 @@ const Dashboard = () => {
                       stroke="none"
                       animationDuration={1500}
                     >
-                      {stats.roleDistribution.map((entry, index) => (
+                      {stats.roleDistribution?.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
@@ -258,33 +276,93 @@ const Dashboard = () => {
               )}
             </div>
           </div>
+
+          {/* Risk Trend Chart */}
+          <div className="saas-card" style={{ height: '340px', display: 'flex', flexDirection: 'column' }}>
+            <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1.5rem', color: '#f97316' }}>
+              Anomaly & Risk Trend
+            </h3>
+            <div style={{ flex: 1, width: '100%', minHeight: '250px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={stats.riskTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorRisk" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <XAxis dataKey="name" stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis stroke="var(--text-muted)" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} domain={[0, 100]} />
+                  <Tooltip contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', backdropFilter: 'blur(8px)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '0.5rem', color: '#f8fafc' }} />
+                  <Area type="monotone" dataKey="AvgRiskScore" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorRisk)" animationDuration={1500} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Risk Distribution Donut Chart */}
+          <div className="saas-card" style={{ height: '340px', display: 'flex', flexDirection: 'column' }}>
+             <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem', color: '#f8fafc' }}>
+              Risk Assessment Distribution
+            </h3>
+            <div style={{ flex: 1, width: '100%', position: 'relative', minHeight: 0 }}>
+              {stats.riskDistribution.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={stats.riskDistribution}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={80}
+                      outerRadius={100}
+                      paddingAngle={5}
+                      dataKey="value"
+                      stroke="none"
+                      animationDuration={1500}
+                    >
+                      {stats.riskDistribution?.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.name === 'LOW' ? '#10b981' : (entry.name === 'MEDIUM' ? '#f59e0b' : '#ef4444')} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', backdropFilter: 'blur(8px)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '0.5rem', color: '#f8fafc' }} />
+                    <Legend verticalAlign="middle" align="right" layout="vertical" iconType="circle" />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+                  No Assessment Data
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Right Column: Live Feed */}
-        <div className="saas-card" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '764px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem' }}>
-            <h3 style={{ fontSize: '1.125rem', fontWeight: 600, color: '#f8fafc' }}>Recent Face Scans</h3>
-            <span style={{ fontSize: '0.75rem', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '0.2rem 0.5rem', borderRadius: '999px', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#10b981', display: 'inline-block' }} className="animate-pulse"></span>
-              Live
+        <div className="glow-medium" style={{ background: 'var(--hud-bg)', padding: '1.5rem', borderRadius: '0.5rem', display: 'flex', flexDirection: 'column', height: '100%', minHeight: '764px', border: '1px solid var(--accent-blue)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid rgba(34, 211, 238, 0.2)', paddingBottom: '1rem' }}>
+            <h3 className="text-glow-arc" style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--accent-blue)', textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'var(--hud-font)' }}>Live Recon Feed</h3>
+            <span style={{ fontSize: '0.7rem', backgroundColor: 'rgba(34, 211, 238, 0.1)', color: 'var(--accent-blue)', padding: '0.25rem 0.75rem', borderRadius: '2px', border: '1px solid rgba(34, 211, 238, 0.3)', display: 'flex', alignItems: 'center', gap: '0.5rem', fontFamily: 'var(--hud-font)' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'var(--accent-blue)', display: 'inline-block', boxShadow: '0 0 8px var(--accent-blue)' }} className="animate-pulse"></span>
+              SECURE
             </span>
           </div>
 
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {stats.recentScans && stats.recentScans.length > 0 ? (
+            {stats.recentScans?.length > 0 ? (
               stats.recentScans.map((scan, idx) => {
-                const isStudent = scan.role?.toLowerCase() === 'student';
-                const userObj = stats.allUsers.find(u => u._id === scan.userId);
+                const isStudent = scan?.role?.toLowerCase() === 'student';
+                const userObj = stats.allUsers?.find(u => u?._id === scan?.userId);
 
                 return (
-                  <div key={`${scan.userId}-${scan.time}-${idx}`} className="feed-item" style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.05)', transition: 'all 0.2s ease', animationDelay: `${idx * 0.1}s` }}>
+                  <div key={`${scan?.userId}-${scan?.time}-${idx}`} className="feed-item" style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem', backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: '1px solid rgba(255,255,255,0.05)', transition: 'all 0.2s ease', animationDelay: `${idx * 0.1}s` }}>
                      {/* Image */}
                      <div style={{ position: 'relative' }}>
-                       {userObj && userObj.faceImage ? (
-                         <img src={userObj.faceImage} alt={scan.name} style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: `2px solid ${isStudent ? '#3b82f6' : '#10b981'}` }} />
+                       {userObj?.faceImage ? (
+                         <img src={userObj.faceImage} alt={scan?.name} style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: `2px solid ${isStudent ? '#3b82f6' : '#10b981'}` }} />
                        ) : (
                          <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: 'var(--bg-primary)', border: `2px solid ${isStudent ? '#3b82f6' : '#10b981'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 800 }}>
-                           {scan.name.charAt(0)}
+                           {(scan?.name || 'U').charAt(0)}
                          </div>
                        )}
                        <div style={{ position: 'absolute', bottom: -2, right: -2, backgroundColor: isStudent ? '#3b82f6' : '#10b981', borderRadius: '50%', width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid var(--bg-card)' }}>
@@ -294,13 +372,13 @@ const Dashboard = () => {
                      
                      {/* Details */}
                      <div style={{ flex: 1 }}>
-                       <p style={{ fontWeight: 600, fontSize: '0.95rem', color: '#f8fafc', marginBottom: '0.1rem' }}>{scan.name}</p>
-                       <p style={{ fontSize: '0.75rem', color: isStudent ? '#60a5fa' : '#34d399', fontWeight: 500, textTransform: 'capitalize' }}>{scan.role}</p>
+                       <p style={{ fontWeight: 600, fontSize: '0.95rem', color: '#f8fafc', marginBottom: '0.1rem' }}>{scan?.name || 'Personnel'}</p>
+                       <p style={{ fontSize: '0.75rem', color: isStudent ? '#60a5fa' : '#34d399', fontWeight: 500, textTransform: 'capitalize' }}>{scan?.role || 'Guest'}</p>
                      </div>
 
                      {/* Time & Arrow */}
                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
-                       <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{scan.time}</span>
+                       <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{scan?.time || '--:--'}</span>
                        <ArrowRight size={14} color="var(--border-color)" />
                      </div>
                   </div>

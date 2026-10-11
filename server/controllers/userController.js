@@ -119,4 +119,37 @@ const deleteAllUsers = async (req, res) => {
   }
 };
 
-module.exports = { getUsers, getUserById, createUser, deleteUser, deleteAllUsers };
+const updateBehavior = async (req, res) => {
+  try {
+    const { blinkRate, movementPattern, stabilityScore, scanTime, adaptiveThreshold } = req.body;
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (!user.behaviorProfile) {
+       user.behaviorProfile = { blinkRate: 0, movementPattern: 0, stabilityScore: 0, avgScanTime: 0, adaptiveThreshold: 0.75 };
+    }
+
+    // If it's the first time learning (everything is 0), just take the new values 100%
+    const isFirstTime = user.behaviorProfile.avgScanTime === 0;
+
+    user.behaviorProfile.blinkRate = isFirstTime ? blinkRate : (user.behaviorProfile.blinkRate * 0.8) + (blinkRate * 0.2);
+    user.behaviorProfile.movementPattern = isFirstTime ? movementPattern : (user.behaviorProfile.movementPattern * 0.8) + (movementPattern * 0.2);
+    user.behaviorProfile.stabilityScore = isFirstTime ? stabilityScore : (user.behaviorProfile.stabilityScore * 0.8) + (stabilityScore * 0.2);
+    user.behaviorProfile.avgScanTime = isFirstTime ? scanTime : (user.behaviorProfile.avgScanTime * 0.8) + (scanTime * 0.2);
+    if (adaptiveThreshold) {
+      user.behaviorProfile.adaptiveThreshold = adaptiveThreshold;
+    }
+
+    await user.save();
+    
+    res.json({ message: 'Behavior profile updated successfully', behaviorProfile: user.behaviorProfile });
+  } catch (error) {
+    console.error('[BEHAVIOR_UPDATE_ERROR]', error);
+    res.status(500).json({ message: 'Failed to update behavior profile' });
+  }
+};
+
+module.exports = { getUsers, getUserById, createUser, deleteUser, deleteAllUsers, updateBehavior };

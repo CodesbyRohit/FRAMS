@@ -264,6 +264,16 @@ git status
 git diff --staged
 ```
 
+### "Audio/Voice not playing"
+
+**Causes:** Browser autoplay block, muted OS, or volume 0.
+
+**Fix:**
+1. **User Interaction**: Ensure the user has clicked at least one button (e.g., "INITIATE BIOMETRIC SYSTEM").
+2. **Session Reset**: Use `sessionStorage.clear()` to re-trigger the `McuVfxIntro`.
+3. **Console Check**: Verify `[F.R.A.M.S] Audio playback confirmed` log exists.
+
+
 ---
 
 ## Checklist Templates

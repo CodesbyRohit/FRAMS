@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getUsers, getUserById, createUser, deleteUser, deleteAllUsers } = require('../controllers/userController');
+const { getUsers, getUserById, createUser, deleteUser, deleteAllUsers, updateBehavior } = require('../controllers/userController');
 const { protect, admin, faculty } = require('../middleware/authMiddleware');
 
 router.route('/')
@@ -10,6 +10,8 @@ router.route('/')
 router.route('/:id')
   .get(protect, faculty, getUserById)
   .delete(protect, admin, deleteUser);
+
+router.put('/:id/update-behavior', updateBehavior);
 
 router.delete('/bulk/clear', protect, admin, deleteAllUsers);
 

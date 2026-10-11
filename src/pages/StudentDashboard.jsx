@@ -34,18 +34,18 @@ const StudentDashboard = () => {
       const { data: attendance } = await api.get(`/attendance/student/${user._id}`);
       
       // Process attendance history
-      const history = attendance.map(a => ({
-        date: a.date,
+      const history = (attendance || []).map(a => ({
+        date: a?.date || '----',
         status: 'Present',
-        time: a.time
+        time: a?.time || '--:--'
       }));
       setAttendanceHistory(history);
 
       // Process stats
       const totalClasses = 30; // Mock total classes for calc
-      const attended = attendance.length;
-      const rate = Math.round((attended / totalClasses) * 100);
-      const lastScan = attendance[0]?.time || '--:--';
+      const attended = (attendance || []).length;
+      const rate = totalClasses > 0 ? Math.round((attended / totalClasses) * 100) : 0;
+      const lastScan = attendance?.[0]?.time || '--:--';
 
       setStats([
         { label: 'Attendance Rate', value: `${rate}%`, icon: TrendingUp, color: '#3b82f6' },
@@ -63,7 +63,7 @@ const StudentDashboard = () => {
 
       const chart = last7Days.map(date => ({
         name: new Date(date).toLocaleDateString(undefined, { weekday: 'short' }),
-        score: attendance.some(a => a.date === date) ? 100 : 0
+        score: (attendance || []).some(a => a?.date === date) ? 100 : 0
       }));
       setChartData(chart);
 
@@ -93,7 +93,7 @@ const StudentDashboard = () => {
     <div className="student-dashboard" style={{ padding: '1.5rem', animate: 'fade-in 0.5s ease-out' }}>
       <header style={{ marginBottom: '2rem' }}>
         <h1 style={{ fontSize: '1.875rem', fontWeight: 700, marginBottom: '0.25rem' }}>
-          Welcome back, {user?.username}
+          Welcome back, {user?.name || user?.username || 'Personnel'}
         </h1>
         <p style={{ color: 'var(--text-muted)' }}>Here's your personal attendance summary from cloud</p>
       </header>
