@@ -10,7 +10,7 @@ export class InsightsResolver {
   constructor(private readonly insights: InsightsService) {}
 
   @Query(() => [InsightGql], {
-    description: 'Predictions, recommendations and summaries — each with its evidence.',
+    description: 'Rule-based observations over your data (and an optional generated summary), each with its evidence. Empty when there is no data.',
   })
   myInsights(@CurrentPerson() person: AuthenticatedPerson): Promise<InsightGql[]> {
     return this.insights.generate(person.personId);

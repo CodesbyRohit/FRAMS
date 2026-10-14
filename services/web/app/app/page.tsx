@@ -204,7 +204,9 @@ export default function TwinPage() {
                 <div key={insight.id} className="rounded-xl border border-aurora-violet/15 bg-aurora-violet/5 p-4">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-violet-200">{insight.title}</p>
-                    <span className="text-xs text-slate-500">{Math.round(insight.confidence * 100)}%</span>
+                    <span className="text-xs text-slate-500">
+                      {insight.basis === 'generated' ? 'AI-written summary' : 'computed from your data'}
+                    </span>
                   </div>
                   <p className="mt-2 text-sm leading-relaxed text-slate-300">{insight.body}</p>
                   {insight.evidence.length > 0 && (

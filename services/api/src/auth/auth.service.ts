@@ -116,8 +116,22 @@ export class AuthService {
     return this.identities.findById(personId);
   }
 
-  async firstPasskeyOptions(ticket: string): Promise<PublicKeyCredentialCreationOptionsJSON> {
+  /**
+   * The ticket only ever authorizes the *first* passkey. Once a credential is
+   * bound (even if deleting the ticket failed), it is dead: further passkeys
+   * need an authenticated passkey session.
+   */
+  private async personForFirstPasskey(ticket: string): Promise<PersonEntity> {
     const person = await this.personForTicket(ticket);
+    if ((await this.passkeys.countFor(person.id)) > 0) {
+      await this.redis.del(this.ticketKey(ticket)).catch(() => undefined);
+      throw new UnauthorizedException('This registration link has already been used. Sign in instead.');
+    }
+    return person;
+  }
+
+  async firstPasskeyOptions(ticket: string): Promise<PublicKeyCredentialCreationOptionsJSON> {
+    const person = await this.personForFirstPasskey(ticket);
     return this.passkeys.registrationOptions(person.id, person.email, person.displayName);
   }
 
@@ -128,7 +142,7 @@ export class AuthService {
     response: RegistrationResponseJSON,
     meta: RequestMeta,
   ): Promise<AuthPayload> {
-    const person = await this.personForTicket(ticket);
+    const person = await this.personForFirstPasskey(ticket);
     const credential: PasskeyEntity = await this.passkeys.verifyRegistration(person.id, deviceName, response);
     await this.redis.del(this.ticketKey(ticket)).catch(() => undefined);
     this.logger.log(`Bound first passkey ${credential.credentialId.slice(0, 8)}… to ${person.id}`);

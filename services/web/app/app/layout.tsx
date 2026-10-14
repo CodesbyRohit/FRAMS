@@ -1,12 +1,12 @@
 'use client';
 
-import { useQuery } from '@apollo/client';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { clearAuth, getToken } from '@/lib/auth';
-import { ME } from '@/lib/graphql';
+import { LOGOUT, ME } from '@/lib/graphql';
 
 const NAV = [
   { href: '/app', label: 'Twin', icon: '◈' },
@@ -20,6 +20,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const authenticated = !!getToken();
   const { data } = useQuery(ME, { skip: !authenticated, ssr: false });
+  const client = useApolloClient();
+  const [logout] = useMutation(LOGOUT);
 
   useEffect(() => {
     if (!getToken()) {
@@ -27,8 +29,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [router]);
 
-  function handleLogout() {
+  async function handleLogout() {
+    // Revoke the session server-side; clear local state even if the API is unreachable.
+    await logout().catch(() => undefined);
     clearAuth();
+    await client.clearStore();
     router.replace('/login');
   }
 

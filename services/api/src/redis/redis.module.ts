@@ -3,13 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 import { RateLimiter } from './rate-limiter.service';
+import { REDIS } from './redis.constants';
+
+export { REDIS };
 
 /**
  * Global Redis client — used for session storage (auth), WebAuthn challenges,
  * rate limiting and the event-bus side channel. Each API replica gets its own
  * connection.
  */
-export const REDIS = Symbol('ANIMA_REDIS');
 
 @Global()
 @Module({

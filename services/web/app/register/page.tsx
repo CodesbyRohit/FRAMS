@@ -36,7 +36,7 @@ export default function RegisterPage() {
     }
     setBusy(true);
     try {
-      // 1. Create the identity + digital twin.
+      // 1. Create the identity + digital twin; the single-use ticket authorizes its first passkey.
       const { data } = await onboard({
         variables: {
           email,
@@ -44,25 +44,25 @@ export default function RegisterPage() {
           roles: roles.split(',').map((r) => r.trim()).filter(Boolean),
         },
       });
-      const personId: string = data.onboard.id;
+      const ticket: string = data.onboard.registrationTicket;
 
       // 2. Ask the authenticator to create a passkey (the primary factor).
       const { data: optData } = await apolloClient.query({
         query: PASSKEY_REGISTRATION_OPTIONS,
-        variables: { personId },
+        variables: { ticket },
       });
       const attestation = await createCredential(optData.passkeyRegistrationOptions);
 
       // 3. Bind it and receive the session token.
       const { data: regData } = await registerPasskey({
         variables: {
-          personId,
+          ticket,
           deviceName: navigator.userAgent.slice(0, 64),
           attestation: JSON.stringify(attestation),
         },
       });
       setAuth(regData.registerPasskey.token, {
-        personId,
+        personId: regData.registerPasskey.personId,
         displayName: regData.registerPasskey.displayName,
         email,
       });

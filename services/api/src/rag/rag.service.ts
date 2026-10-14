@@ -1,21 +1,17 @@
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QdrantClient } from '@qdrant/js-client-rest';
 import { Repository } from 'typeorm';
 
+import { AiUnavailableError, describeAiFailure } from '../ai/ai-error';
+import { checkCitations, fenceUntrusted } from '../ai/citations';
 import { EmbeddingsClient } from '../ai/embeddings.client';
 import { LlmClient } from '../ai/llm.client';
 import { newId } from '../common/ids';
 import { chunkText } from './chunker';
 import { DocumentEntity } from './document.entity';
-import { COLLECTIONS, QDRANT } from './qdrant.provider';
+import { COLLECTIONS } from './qdrant.provider';
+import { VectorStore, VectorStoreUnavailableError } from './vector-store.service';
 
 export interface UploadFileLike {
   originalname: string;
@@ -24,10 +20,50 @@ export interface UploadFileLike {
   buffer: Buffer;
 }
 
+/** A retrieved chunk the answer may cite as [index]. */
 export interface RagSource {
+  index: number;
+  documentId: string;
   label: string;
+  chunkIndex: number;
   snippet: string;
   score: number;
+}
+
+export type RagStatus = 'ok' | 'no_results' | 'unavailable' | 'not_configured';
+
+export interface RagAnswer {
+  status: RagStatus;
+  /** Null when no answer could be generated (nothing retrieved, or no model). */
+  answer: string | null;
+  generated: boolean;
+  generationNote?: string;
+  sources: RagSource[];
+  citedSourceIndexes: number[];
+  invalidCitations: number[];
+  latencyMs: number;
+}
+
+export interface DocumentHit {
+  documentId: string;
+  chunkIndex: number;
+  title: string;
+  content: string;
+  score: number;
+}
+
+export interface DocumentSearchResult {
+  status: 'ok' | 'unavailable' | 'not_configured';
+  message?: string;
+  hits: DocumentHit[];
+}
+
+interface ChunkPayload {
+  personId: string;
+  documentId?: unknown;
+  chunkIndex?: unknown;
+  title?: unknown;
+  content?: unknown;
 }
 
 const TEXT_MIME = new Set([
@@ -62,7 +98,7 @@ export class RagService {
     private readonly cfg: ConfigService,
     private readonly embeddings: EmbeddingsClient,
     private readonly llm: LlmClient,
-    @Inject(QDRANT) private readonly qdrant: QdrantClient,
+    private readonly vectors: VectorStore,
     @InjectRepository(DocumentEntity)
     private readonly docs: Repository<DocumentEntity>,
   ) {
@@ -80,8 +116,6 @@ export class RagService {
     if (!text.trim()) {
       throw new BadRequestException('No readable text could be extracted from this file.');
     }
-    await this.ensureCollection(COLLECTIONS.documents);
-
     const doc = this.docs.create({
       id: newId('doc'),
       personId,
@@ -96,18 +130,14 @@ export class RagService {
     try {
       const chunks = chunkText(text);
       const vectors = await this.embeddings.embedMany(chunks);
-      const points = chunks.map((chunk, i) => ({
-        id: newId(`chunk_${doc.id}`),
-        vector: vectors[i],
-        payload: {
-          documentId: doc.id,
-          personId,
-          chunkIndex: i,
-          title: doc.title,
-          content: chunk,
-        },
-      }));
-      await this.qdrant.upsert(COLLECTIONS.documents, { points });
+      // VectorStore assigns UUID point ids (Qdrant rejects prefixed string ids).
+      await this.vectors.upsert(
+        COLLECTIONS.documents,
+        chunks.map((chunk, i) => ({
+          vector: vectors[i],
+          payload: { personId, documentId: doc.id, chunkIndex: i, title: doc.title, content: chunk },
+        })),
+      );
 
       doc.chunkCount = chunks.length;
       doc.status = 'indexed';
@@ -117,7 +147,11 @@ export class RagService {
     } catch (err) {
       doc.status = 'failed';
       await this.docs.save(doc);
-      throw new ServiceUnavailableException(`Indexing failed: ${(err as Error).message}`);
+      // Don't leave orphaned chunks of a failed document searchable.
+      await this.vectors.deleteWhere(COLLECTIONS.documents, personId, { documentId: doc.id }).catch(() => undefined);
+      const reason =
+        err instanceof AiUnavailableError ? describeAiFailure(err.kind) : (err as Error).message;
+      throw new ServiceUnavailableException(`Indexing failed: ${reason}`);
     }
   }
 
@@ -174,87 +208,110 @@ export class RagService {
 
   // ── Retrieval ─────────────────────────────────────────────────────────────
 
-  async searchDocuments(
-    personId: string,
-    query: string,
-    limit = 5,
-  ): Promise<Array<{ content: string; score: number; title: string; documentId: string }>> {
+  /** Person-scoped semantic search. Outages are reported, never disguised as "no results". */
+  async searchDocuments(personId: string, query: string, limit = 5): Promise<DocumentSearchResult> {
+    let vector: number[];
     try {
-      await this.ensureCollection(COLLECTIONS.documents);
-      const vector = await this.embeddings.embed(query);
-      const result = await this.qdrant.query(COLLECTIONS.documents, {
-        query: vector,
-        limit,
-        with_payload: true,
-        filter: { must: [{ key: 'personId', match: { value: personId } }] },
-      });
-      return result.points.map((hit) => ({
-        content: (hit.payload as any)?.content ?? '',
-        title: (hit.payload as any)?.title ?? 'unknown',
-        documentId: (hit.payload as any)?.documentId ?? '',
-        score: hit.score ?? 0,
-      }));
+      vector = await this.embeddings.embed(query);
     } catch (err) {
-      if (this.isConnectivityError(err)) {
-        return [];
+      if (err instanceof AiUnavailableError) {
+        return {
+          status: err.kind === 'not_configured' ? 'not_configured' : 'unavailable',
+          message: `Document search is unavailable: ${describeAiFailure(err.kind)}`,
+          hits: [],
+        };
       }
       throw err;
     }
+    let raw;
+    try {
+      raw = await this.vectors.search<ChunkPayload>(COLLECTIONS.documents, personId, vector, limit);
+    } catch (err) {
+      if (err instanceof VectorStoreUnavailableError) {
+        return {
+          status: 'unavailable',
+          message: 'Document search is unavailable: the vector store (Qdrant) cannot be reached.',
+          hits: [],
+        };
+      }
+      throw err;
+    }
+    const hits = raw
+      .filter((h) => typeof h.payload.documentId === 'string' && Number.isInteger(h.payload.chunkIndex))
+      .map((h) => ({
+        documentId: h.payload.documentId as string,
+        chunkIndex: h.payload.chunkIndex as number,
+        title: typeof h.payload.title === 'string' ? h.payload.title : 'Untitled document',
+        content: typeof h.payload.content === 'string' ? h.payload.content : '',
+        score: h.score,
+      }));
+    return { status: 'ok', hits };
   }
 
-  /** Grounded answer: retrieve → prompt with context → cite sources. */
-  async ask(
-    personId: string,
-    query: string,
-  ): Promise<{ answer: string; sources: RagSource[]; latencyMs: number }> {
+  /** Grounded answer: retrieve → prompt with fenced context → validate citations. */
+  async ask(personId: string, query: string): Promise<RagAnswer> {
     const started = Date.now();
-    const hits = await this.searchDocuments(personId, query, 6);
-    if (hits.length === 0) {
-      return {
-        answer:
-          'I could not find anything relevant in your knowledge corpus. Add documents (text, markdown, code, or images with a vision model) and ask again.',
+    const search = await this.searchDocuments(personId, query, 6);
+    const done = (rest: Omit<RagAnswer, 'latencyMs'>): RagAnswer => ({ ...rest, latencyMs: Date.now() - started });
+
+    if (search.status !== 'ok') {
+      return done({
+        status: search.status,
+        answer: null,
+        generated: false,
+        generationNote: search.message,
         sources: [],
-        latencyMs: Date.now() - started,
-      };
+        citedSourceIndexes: [],
+        invalidCitations: [],
+      });
+    }
+    if (search.hits.length === 0) {
+      return done({
+        status: 'no_results',
+        answer: null,
+        generated: false,
+        generationNote: 'Nothing in your documents matched this question.',
+        sources: [],
+        citedSourceIndexes: [],
+        invalidCitations: [],
+      });
     }
 
-    const context = hits
-      .map((h, i) => `[${i + 1}] ${h.title}\n${h.content.slice(0, 600)}`)
+    const sources: RagSource[] = search.hits.map((h, i) => ({
+      index: i + 1,
+      documentId: h.documentId,
+      label: h.title,
+      chunkIndex: h.chunkIndex,
+      snippet: h.content.slice(0, 220),
+      score: Math.round(h.score * 1000) / 1000,
+    }));
+    const context = search.hits
+      .map((h, i) => `[${i + 1}] ${h.title} (chunk ${h.chunkIndex})\n${h.content.slice(0, 600)}`)
       .join('\n\n---\n\n');
 
-    const answer = await this.llm.chat(
-      `You are ANIMA's knowledge assistant. Answer the user's question using ONLY the provided context. ` +
-        `Cite your sources inline as [n] matching the numbered context. If the context is insufficient, say so.`,
-      `Question: ${query}\n\nContext:\n${context}`,
-      { temperature: 0.2, maxTokens: 800 },
-    );
-
-    return {
-      answer,
-      sources: hits.map((h) => ({
-        label: h.title,
-        snippet: h.content.slice(0, 220),
-        score: Math.round(h.score * 1000) / 1000,
-      })),
-      latencyMs: Date.now() - started,
-    };
-  }
-
-  // ── Qdrant bootstrap ──────────────────────────────────────────────────────
-
-  async ensureCollection(name: string, vectorSize?: number): Promise<void> {
-    const collections = await this.qdrant.getCollections();
-    if (collections.collections.some((c) => c.name === name)) {
-      return;
+    try {
+      const answer = await this.llm.chat(
+        `You are ANIMA's knowledge assistant. Answer the user's question using ONLY the numbered sources. ` +
+          `Cite them inline as [n]. If the sources are insufficient, say so. Never invent sources.`,
+        `Question: ${query}\n\n${fenceUntrusted(context)}`,
+        { temperature: 0.2, maxTokens: 800 },
+      );
+      return done({ status: 'ok', answer, generated: true, sources, ...checkCitations(answer, sources.length) });
+    } catch (err) {
+      // Retrieval worked: return the passages, but no generated answer.
+      return done({
+        status: 'ok',
+        answer: null,
+        generated: false,
+        generationNote:
+          err instanceof AiUnavailableError
+            ? describeAiFailure(err.kind)
+            : 'The language model failed, so no answer was generated.',
+        sources,
+        citedSourceIndexes: [],
+        invalidCitations: [],
+      });
     }
-    await this.qdrant.createCollection(name, {
-      vectors: { size: vectorSize ?? this.embeddings.dimension, distance: 'Cosine' },
-    });
-  }
-
-  private isConnectivityError(err: unknown): boolean {
-    const msg = (err as Error)?.message ?? '';
-    return /ECONNREFUSED|ENOTFOUND|connect/i.test(msg);
   }
 
   private isCodeFilename(name: string): boolean {

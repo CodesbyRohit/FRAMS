@@ -14,8 +14,12 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   agentId?: string;
-  toolCalls?: Array<{ tool: string; result?: string; error?: string }>;
-  sources?: Array<{ label: string; snippet: string }>;
+  /** False when no model wrote the answer (evidence-only fallback). */
+  generated?: boolean;
+  generationNote?: string | null;
+  toolCalls?: Array<{ tool: string; status: string; result?: string; error?: string; durationMs: number }>;
+  sources?: Array<{ index: number; label: string; snippet: string; chunkIndex?: number | null }>;
+  invalidCitations?: number[];
 }
 
 const SUGGESTIONS = [
@@ -24,7 +28,7 @@ const SUGGESTIONS = [
   'Who should I collaborate with?',
   'What should I build next?',
   'What are my knowledge gaps?',
-  'How is my trust posture?',
+  'Which sign-in methods are bound to my identity?',
 ];
 
 export default function CopilotPage() {
@@ -52,13 +56,18 @@ export default function CopilotPage() {
           query: ASK_KNOWLEDGE,
           variables: { query: question },
         });
+        const result = data.askYourKnowledge;
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: data.askYourKnowledge.answer,
-            sources: data.askYourKnowledge.sources,
+            // No answer is shown as such, never as an empty or invented one.
+            content: result.answer ?? result.generationNote ?? 'No answer could be generated.',
+            generated: result.generated,
+            generationNote: result.answer ? result.generationNote : null,
+            sources: result.sources,
+            invalidCitations: result.invalidCitations,
           },
         ]);
       } else {
@@ -74,8 +83,11 @@ export default function CopilotPage() {
             role: 'assistant',
             content: reply.content,
             agentId: reply.agentId,
+            generated: reply.generated,
+            generationNote: reply.generationNote,
             toolCalls: reply.toolCalls,
             sources: reply.sources,
+            invalidCitations: reply.invalidCitations,
           },
         ]);
       }
@@ -174,13 +186,21 @@ export default function CopilotPage() {
                   </p>
                 )}
                 <p className="whitespace-pre-wrap">{m.content}</p>
+                {m.role === 'assistant' && m.generated === false && m.generationNote && (
+                  <p className="mt-2 text-[11px] text-amber-300/80">Not AI-generated: {m.generationNote}</p>
+                )}
+                {m.invalidCitations && m.invalidCitations.length > 0 && (
+                  <p className="mt-2 text-[11px] text-amber-300/80">
+                    Unsupported citation(s): {m.invalidCitations.map((n) => `[${n}]`).join(' ')} — no such source.
+                  </p>
+                )}
 
                 {m.toolCalls && m.toolCalls.length > 0 && (
                   <div className="mt-3 space-y-1 border-t border-white/10 pt-2.5">
                     {m.toolCalls.map((t, i) => (
                       <p key={i} className="text-[11px] text-slate-500">
                         <span className="text-cyan-300">⟡ {t.tool}</span>
-                        {t.error ? ` — failed: ${t.error}` : ' — consulted your data'}
+                        {` — ${t.status}${t.error ? `: ${t.error}` : t.status !== 'ok' && t.result ? `: ${t.result}` : ''} (${t.durationMs} ms)`}
                       </p>
                     ))}
                   </div>
@@ -189,9 +209,13 @@ export default function CopilotPage() {
                 {m.sources && m.sources.length > 0 && (
                   <div className="mt-3 space-y-1.5 border-t border-white/10 pt-2.5">
                     <p className="text-[10px] uppercase tracking-widest text-slate-500">Sources</p>
-                    {m.sources.map((s, i) => (
-                      <p key={i} className="text-[11px] text-slate-400">
-                        <span className="font-medium text-slate-300">{s.label}</span> — {s.snippet.slice(0, 90)}
+                    {m.sources.map((s) => (
+                      <p key={s.index} className="text-[11px] text-slate-400">
+                        <span className="font-medium text-slate-300">
+                          [{s.index}] {s.label}
+                          {typeof s.chunkIndex === 'number' ? ` · chunk ${s.chunkIndex}` : ''}
+                        </span>{' '}
+                        — {s.snippet.slice(0, 90)}
                       </p>
                     ))}
                   </div>

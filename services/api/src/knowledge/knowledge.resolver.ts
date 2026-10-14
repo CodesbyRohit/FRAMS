@@ -10,7 +10,7 @@ export class KnowledgeResolver {
   constructor(private readonly knowledge: KnowledgeService) {}
 
   @Query(() => GraphSnapshotGql, {
-    description: 'Your 2-hop knowledge galaxy (people, skills, projects, ideas...).',
+    description: 'Your own knowledge graph. status=unavailable means Neo4j is down, not that the graph is empty.',
   })
   async knowledgeGraph(
     @CurrentPerson() person: AuthenticatedPerson,
@@ -18,6 +18,7 @@ export class KnowledgeResolver {
   ): Promise<GraphSnapshotGql> {
     const graph = await this.knowledge.getGraph(person.personId, limit ?? 120);
     return {
+      status: graph.status,
       nodes: graph.nodes.map((n) => ({
         id: n.id,
         type: n.type,
@@ -31,12 +32,13 @@ export class KnowledgeResolver {
         type: e.type,
         properties: JSON.stringify(e.properties ?? {}),
       })),
+      truncated: graph.truncated,
       generatedAt: graph.generatedAt,
     };
   }
 
-  @Query(() => Boolean, { description: 'Whether the knowledge graph backend is reachable.' })
-  knowledgeGraphAvailable(): boolean {
+  @Query(() => Boolean, { description: 'Whether the knowledge graph backend is reachable (live probe, cached briefly).' })
+  knowledgeGraphAvailable(): Promise<boolean> {
     return this.knowledge.isAvailable();
   }
 }

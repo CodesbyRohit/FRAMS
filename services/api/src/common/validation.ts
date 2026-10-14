@@ -59,7 +59,27 @@ export function textList(
   return [...new Map(items.map((i) => [i.toLowerCase(), i])).values()];
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Parse a JSON-object argument (e.g. a WebAuthn response) with a size cap; 400 instead of 500 on bad input. */
+export function parseJsonObject<T>(value: unknown, field: string, maxBytes = 64 * 1024): T {
+  if (typeof value !== 'string' || !value) {
+    throw new BadRequestException(`${field} is required.`);
+  }
+  if (Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw new BadRequestException(`${field} is too large.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new BadRequestException(`${field} is not valid JSON.`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new BadRequestException(`${field} must be a JSON object.`);
+  }
+  return parsed as T;
+}
+
+const EMAIL_RE =/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function normalizeEmail(value: unknown): string {
   const email = requireText(value, 'Email', { max: 254 }).toLowerCase();

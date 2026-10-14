@@ -1,39 +1,32 @@
-import { Args, Float, Query, Resolver } from '@nestjs/graphql';
+import { Query, Resolver } from '@nestjs/graphql';
 
 import { CurrentPerson } from '../common/current-person.decorator';
+import { toIso } from '../common/dates';
 import type { AuthenticatedPerson } from '../common/jwt-auth.guard';
 import { TrustGql } from '../graphql/models';
+import type { TrustProfileEntity } from './trust.entity';
 import { TrustService } from './trust.service';
+
+/** Wire mapping: verification facts only — no device/behavioural/identity scores exist. */
+export function toTrustGql(p: TrustProfileEntity): TrustGql {
+  return {
+    personId: p.personId,
+    faceEnrolled: p.faceEnrolled,
+    faceConsentAt: toIso(p.faceConsentAt),
+    lastFaceSimilarity: p.lastFaceSimilarity ?? null,
+    boundMethods: p.boundMethods,
+    lastVerifiedAt: toIso(p.lastVerifiedAt),
+    lastVerificationMethod: p.lastVerificationMethod ?? null,
+    updatedAt: toIso(p.updatedAt),
+  };
+}
 
 @Resolver()
 export class TrustResolver {
   constructor(private readonly trust: TrustService) {}
 
-  @Query(() => TrustGql, { description: 'Your identity trust posture (face = one factor, never the whole story).' })
-  myTrustProfile(@CurrentPerson() person: AuthenticatedPerson): Promise<TrustGql> {
-    return this.trust.getProfile(person.personId).then((p) => ({
-      personId: p.personId,
-      identityScore: p.identityScore,
-      deviceScore: p.deviceScore,
-      behavioralScore: p.behavioralScore,
-      boundMethods: p.boundMethods,
-      lastVerifiedAt: p.lastVerifiedAt ?? undefined,
-      lastVerificationMethod: p.lastVerificationMethod ?? undefined,
-      updatedAt: p.updatedAt,
-    }));
-  }
-
-  @Query(() => Float, {
-    description: 'Dry-run composite identity score without a verification.',
-  })
-  async trustScorePreview(
-    @CurrentPerson() person: AuthenticatedPerson,
-    @Args('deviceScore', { type: () => Float }) deviceScore = 0.5,
-    @Args('behavioralScore', { type: () => Float }) behavioralScore = 0.5,
-  ): Promise<number> {
-    const profile = await this.trust.getProfile(person.personId);
-    return Math.round(
-      (profile.identityScore * 0.6 + deviceScore * 0.2 + behavioralScore * 0.2) * 1000,
-    ) / 1000;
+  @Query(() => TrustGql, { description: 'Your verification facts: bound factors, face enrollment, last sign-in.' })
+  async myTrustProfile(@CurrentPerson() person: AuthenticatedPerson): Promise<TrustGql> {
+    return toTrustGql(await this.trust.getProfile(person.personId));
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import type { AgentId } from '@anima/shared';
 
 import { LlmClient } from '../ai/llm.client';
@@ -6,13 +6,13 @@ import { KnowledgeService } from '../knowledge/knowledge.service';
 import { MemoryService } from '../memory/memory.service';
 import { RagService } from '../rag/rag.service';
 import { TrustService } from '../trust/trust.service';
-import { TwinService } from '../twin/twin.service';
-import { Agent, AgentContext, AgentSource, AgentSpec, AgentTool } from './framework';
+import { EMPTY_NARRATIVE, statsOf, TwinService } from '../twin/twin.service';
+import { Agent, AgentContext, AgentRunResult, AgentSpec, AgentTool, ToolResult } from './framework';
 
 /**
- * ANIMA Copilot — ten specialized agents, each with its own tools and memory
- * access, routed by intent. The face may be the gateway, but this is the
- * product: an interface that understands you.
+ * ANIMA Copilot — ten agent personas over one shared tool set, routed by
+ * keyword overlap (or chosen explicitly). Each agent has its own prompt and
+ * subset of tools; answers cite the records the tools actually returned.
  */
 @Injectable()
 export class CopilotService {
@@ -120,10 +120,10 @@ export class CopilotService {
       {
         id: 'security',
         name: 'Security Agent',
-        description: 'Reports trust posture, bound verification methods and session health.',
+        description: 'Reports bound sign-in methods, face enrollment and verification history.',
         keywords: ['security', 'trust', 'passkey', 'face', 'verify', 'session', 'safe'],
         systemPrompt:
-          "You are ANIMA's Security Agent. Report the person's identity trust posture from the trust profile, plainly and reassuringly.",
+          "You are ANIMA's Security Agent. Report the person's sign-in methods and verification history from the trust profile, plainly. Never state scores or percentages that are not in the evidence.",
         toolNames: ['trust_status', 'twin_state'],
       },
     ];
@@ -133,83 +133,143 @@ export class CopilotService {
     }
   }
 
-  /** All tools the agents can use. Each returns a summary + citations. */
+  /** All tools the agents can use. Each reports its outcome; only real records become sources. */
   private tools(): AgentTool[] {
-    const withSources = (label: string, summary: string, extra: AgentSource[] = []): { summary: string; sources: AgentSource[] } => ({
-      summary,
-      sources: [{ label, snippet: summary.slice(0, 200) }, ...extra],
-    });
-
     const memorySearch: AgentTool = {
       name: 'memory_search',
       description: 'Semantically search the person’s memories and interaction history.',
-      run: async (ctx, query) => {
-        const rows = await this.memory.searchMemories(ctx.personId, query, 5);
-        if (rows.length === 0) {
-          return withSources('memory', 'No matching memories found.');
+      run: async (ctx, query): Promise<ToolResult> => {
+        const result = await this.memory.searchMemories(ctx.personId, query, 5);
+        const pending =
+          result.unindexedCount > 0 ? ` ${result.unindexedCount} memories are not yet searchable by meaning.` : '';
+        if (result.status !== 'ok') {
+          return { status: 'unavailable', summary: (result.message ?? 'Semantic search is unavailable.') + pending, sources: [] };
         }
-        const summary = rows.map((m) => `• ${m.title}: ${m.content}`).join('\n');
-        return withSources('memory', summary, rows.map((m) => ({ label: m.title, snippet: m.content.slice(0, 180) })));
+        if (result.items.length === 0) {
+          return { status: 'empty', summary: `No matching memories found.${pending}`, sources: [] };
+        }
+        return {
+          status: 'ok',
+          summary: `${result.items.length} matching memories.${pending}`,
+          sources: result.items.map((m) => ({
+            kind: 'memory' as const,
+            label: m.title,
+            snippet: m.content.slice(0, 240),
+            refId: m.id,
+            score: Math.round(m.score * 1000) / 1000,
+          })),
+        };
       },
     };
 
     const knowledgeGraph: AgentTool = {
       name: 'knowledge_graph',
-      description: 'Query the knowledge galaxy of people, projects, skills and ideas.',
-      run: async (ctx) => {
+      description: 'Query the knowledge galaxy of contacts, projects, skills and ideas.',
+      run: async (ctx): Promise<ToolResult> => {
         const graph = await this.knowledge.getGraph(ctx.personId, 100);
-        if (graph.nodes.length === 0) {
-          return withSources('knowledge graph', 'The knowledge galaxy is empty (Neo4j may be offline).');
+        if (graph.status !== 'ok') {
+          return { status: 'unavailable', summary: 'The knowledge graph (Neo4j) is unavailable.', sources: [] };
         }
-        const people = graph.nodes.filter((n) => n.type === 'Person');
-        const projects = graph.nodes.filter((n) => n.type === 'Project');
-        const skills = graph.nodes.filter((n) => n.type === 'Skill');
-        const summary = `Galaxy contains ${graph.nodes.length} nodes and ${graph.edges.length} connections — ${people.length} people, ${projects.length} projects, ${skills.length} skills.`;
-        return withSources('knowledge graph', summary);
+        // The person's own root node alone is not knowledge.
+        const owned = graph.nodes.filter((n) => n.type !== 'Person');
+        if (owned.length === 0) {
+          return { status: 'empty', summary: 'The knowledge graph has no entries yet.', sources: [] };
+        }
+        const parts = ['Project', 'Skill', 'Contact', 'Idea', 'Goal', 'Meeting']
+          .map((type) => {
+            const list = owned.filter((n) => n.type === type).map((n) => n.label);
+            return list.length > 0 ? `${type}s (${list.length}): ${list.slice(0, 8).join(', ')}` : '';
+          })
+          .filter(Boolean);
+        const snippet =
+          `${owned.length} entries and ${graph.edges.length} connections${graph.truncated ? ' (partial view)' : ''}. ` +
+          parts.join('; ');
+        return {
+          status: 'ok',
+          summary: snippet.slice(0, 400),
+          sources: [{ kind: 'graph', label: 'Knowledge graph', snippet }],
+        };
       },
     };
 
     const ragSearch: AgentTool = {
       name: 'rag_search',
-      description: 'Search the person’s uploaded documents and answer with citations.',
-      run: async (ctx, query) => {
-        const result = await this.rag.ask(ctx.personId, query);
-        return withSources('documents', result.answer, result.sources.map((s) => ({ label: s.label, snippet: s.snippet })));
+      description: 'Search the person’s uploaded documents for relevant passages.',
+      run: async (ctx, query): Promise<ToolResult> => {
+        const result = await this.rag.searchDocuments(ctx.personId, query, 5);
+        if (result.status !== 'ok') {
+          return { status: 'unavailable', summary: result.message ?? 'Document search is unavailable.', sources: [] };
+        }
+        if (result.hits.length === 0) {
+          return { status: 'empty', summary: 'No matching passages in your documents.', sources: [] };
+        }
+        return {
+          status: 'ok',
+          summary: `${result.hits.length} matching passages.`,
+          sources: result.hits.map((h) => ({
+            kind: 'document' as const,
+            label: h.title,
+            snippet: h.content.slice(0, 240),
+            refId: h.documentId,
+            chunkIndex: h.chunkIndex,
+            score: Math.round(h.score * 1000) / 1000,
+          })),
+        };
       },
     };
 
     const twinState: AgentTool = {
       name: 'twin_state',
       description: 'Read the current digital twin state: skills, goals, narrative, activity stats.',
-      run: async (ctx) => {
+      run: async (ctx): Promise<ToolResult> => {
         const twin = await this.twins.getTwin(ctx.personId);
-        const topSkills = twin.skills
-          .sort((a, b) => b.level - a.level)
+        const stats = statsOf(twin);
+        const hasData = twin.skills.length > 0 || twin.goals.length > 0 || stats.interactions > 0;
+        if (!hasData) {
+          return { status: 'empty', summary: 'The digital twin has no recorded skills, goals or activity yet.', sources: [] };
+        }
+        const topSkills = [...twin.skills]
+          .sort((a, b) => b.evidenceCount - a.evidenceCount)
           .slice(0, 6)
-          .map((s) => `${s.name} (${Math.round(s.level * 100)}%)`)
+          .map((s) => `${s.name} (${s.evidenceCount} practice event(s))`)
           .join(', ');
-        const summary = [
-          `Narrative: ${twin.narrative}`,
-          `Top skills: ${topSkills || 'none yet'}`,
-          `Goals: ${twin.goals.map((g) => `${g.title} (${Math.round(g.progress * 100)}%)`).join(', ') || 'none yet'}`,
-          `Interactions: ${twin.stats.interactions}, Memories: ${twin.stats.memories}, Documents: ${twin.stats.documents}`,
-        ].join('\n');
-        return withSources('digital twin', summary);
+        const goals = twin.goals
+          .map((g) => `${g.title} (${g.status}, ${Math.round(g.progress * 100)}% reported)`)
+          .join(', ');
+        const snippet = [
+          twin.narrative && twin.narrative !== EMPTY_NARRATIVE ? `Narrative: ${twin.narrative}` : '',
+          `Skills: ${topSkills || 'none recorded'}`,
+          `Goals: ${goals || 'none'}`,
+          `Activity: ${stats.interactions} interactions, ${stats.memories} memories, ${stats.documents} documents over ${stats.daysActive} active day(s)`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+        return {
+          status: 'ok',
+          summary: 'Read the digital twin.',
+          sources: [{ kind: 'twin', label: 'Digital twin', snippet, refId: twin.id }],
+        };
       },
     };
 
     const trustStatus: AgentTool = {
       name: 'trust_status',
-      description: 'Read identity trust posture: scores and bound verification methods.',
-      run: async (ctx) => {
+      description: 'Read verification facts: bound sign-in methods, face enrollment and the last verification.',
+      run: async (ctx): Promise<ToolResult> => {
         const profile = await this.trust.getProfile(ctx.personId);
-        const summary = [
-          `Identity confidence: ${Math.round(profile.identityScore * 100)}%`,
-          `Device posture: ${Math.round(profile.deviceScore * 100)}%`,
-          `Behavioral consistency: ${Math.round(profile.behavioralScore * 100)}%`,
-          `Bound methods: ${profile.boundMethods.join(', ') || 'none yet'}`,
+        const snippet = [
+          `Bound sign-in methods: ${profile.boundMethods.join(', ') || 'none'}`,
+          `Face sign-in: ${profile.faceEnrolled ? 'enrolled' : 'not enrolled'}`,
+          profile.lastVerifiedAt
+            ? `Last verification: ${profile.lastVerificationMethod ?? 'unknown method'} at ${new Date(profile.lastVerifiedAt).toISOString()}`
+            : 'No verification recorded yet',
+          'ANIMA does not measure device posture or behaviour and reports no trust score.',
         ].join('\n');
-        return withSources('trust profile', summary);
+        return {
+          status: 'ok',
+          summary: 'Read the trust profile.',
+          sources: [{ kind: 'trust', label: 'Trust profile', snippet }],
+        };
       },
     };
 
@@ -220,13 +280,20 @@ export class CopilotService {
     return [...this.agents.values()].map((a) => a.specInfo);
   }
 
-  /** Route the message to the best agent and run it. */
-  async ask(personId: string, displayName: string, message: string): Promise<{
-    content: string;
-    agentId: AgentId;
-    toolCalls: Array<{ tool: string; args: string; result?: string; error?: string }>;
-    sources: AgentSource[];
-  }> {
+  /** Route the message to the requested agent, or the best keyword match, and run it. */
+  async ask(
+    personId: string,
+    displayName: string,
+    message: string,
+    agentId?: AgentId,
+  ): Promise<AgentRunResult & { routing: 'explicit' | 'keyword' | 'default' }> {
+    if (agentId) {
+      const chosen = this.agents.get(agentId);
+      if (!chosen) {
+        throw new BadRequestException(`Unknown agent "${agentId}".`);
+      }
+      return { ...(await chosen.run(message, { personId, displayName })), routing: 'explicit' };
+    }
     let best = this.agents.get('knowledge')!;
     let bestScore = 0;
     for (const agent of this.agents.values()) {
@@ -237,6 +304,6 @@ export class CopilotService {
       }
     }
     const result = await best.run(message, { personId, displayName } satisfies AgentContext);
-    return result;
+    return { ...result, routing: bestScore > 0 ? 'keyword' : 'default' };
   }
 }
