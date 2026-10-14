@@ -16,15 +16,6 @@ function base64UrlToArrayBuffer(base64Url: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-function arrayBufferToBase64Url(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 export async function createCredential(
   optionsJson: string,
 ): Promise<Record<string, unknown>> {

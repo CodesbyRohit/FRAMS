@@ -82,7 +82,9 @@ export type MemoryEventType =
   | 'CHAT_CREATED'
   | 'IDEA_CREATED'
   | 'LINK_SHARED'
-  | 'FEEDBACK_GIVEN';
+  | 'FEEDBACK_GIVEN'
+  /** Platform-only: a verification factor was added or removed. */
+  | 'SECURITY_CHANGED';
 
 /** One raw interaction recorded by any service. */
 export interface MemoryEventInput {

@@ -1,6 +1,16 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import neo4j, { Driver, Session } from 'neo4j-driver';
+import neo4j, { Driver } from 'neo4j-driver';
+
+import {
+  GraphEventInput,
+  GraphStatement,
+  mapEdge,
+  mapNode,
+  RawEdgeRow,
+  RawNodeRow,
+  statementsForEvent,
+} from './graph-mapping';
 
 export interface GraphNodeDto {
   id: string;
@@ -17,243 +27,211 @@ export interface GraphEdgeDto {
   properties?: Record<string, unknown>;
 }
 
+export type GraphStatus = 'ok' | 'unavailable';
+
 export interface GraphSnapshotDto {
+  status: GraphStatus;
   nodes: GraphNodeDto[];
   edges: GraphEdgeDto[];
+  /** True when more owned nodes exist than were returned. */
+  truncated: boolean;
   generatedAt: string;
 }
 
+const PROBE_TTL_MS = 15_000;
+
 /**
- * Knowledge graph projection over Neo4j. Every memory event is folded into
- * the graph: people, skills, projects, goals, documents, ideas and meetings
- * become nodes; the relationships between them become edges.
+ * Knowledge graph projection over Neo4j. Memory events are folded into a
+ * per-person graph (see graph-mapping.ts for the tenancy rule).
  *
- * The graph is an availability-optional dependency: if Neo4j is unreachable
- * the API still runs and the twin keeps learning — the graph catches up on
- * reconnection via the event stream.
+ * Neo4j is availability-optional: when unreachable, writes return `false`
+ * (the memory row records that graph sync is pending and can be replayed with
+ * `rebuildFor`) and reads report `status: 'unavailable'` instead of an empty
+ * graph that would look like "no data".
  */
 @Injectable()
 export class KnowledgeService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KnowledgeService.name);
   private driver?: Driver;
-  private available = false;
+  private lastProbe: { at: number; ok: boolean } = { at: 0, ok: false };
 
   constructor(private readonly cfg: ConfigService) {}
 
   onModuleInit(): void {
     try {
-      const uri = this.cfg.get('NEO4J_URI', 'bolt://localhost:7687');
       this.driver = neo4j.driver(
-        uri,
+        this.cfg.get('NEO4J_URI', 'bolt://localhost:7687'),
         neo4j.auth.basic(
           this.cfg.get('NEO4J_USER', 'neo4j'),
           this.cfg.get('NEO4J_PASSWORD', 'anima-neo4j'),
         ),
-        { maxConnectionLifetime: 3 * 60 * 60 * 1000 },
+        { maxConnectionLifetime: 3 * 60 * 60 * 1000, connectionAcquisitionTimeout: 5_000 },
       );
-      this.available = true;
     } catch (err) {
       this.logger.warn(`Neo4j disabled: ${(err as Error).message}`);
-      this.available = false;
     }
+    void this.isAvailable(true).then((ok) => {
+      if (ok) {
+        void this.ensureIndexes();
+      } else {
+        this.logger.warn('Neo4j is not reachable — the knowledge graph is unavailable.');
+      }
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
     await this.driver?.close();
   }
 
-  isAvailable(): boolean {
-    return this.available && !!this.driver;
-  }
-
-  private session(): Session {
-    if (!this.driver) {
-      throw new Error('Neo4j driver not initialized.');
+  /** Real connectivity check, cached briefly so hot paths don't probe every call. */
+  async isAvailable(force = false): Promise<boolean> {
+    if (!this.driver) return false;
+    if (!force && Date.now() - this.lastProbe.at < PROBE_TTL_MS) {
+      return this.lastProbe.ok;
     }
-    return this.driver.session();
-  }
-
-  private async run(query: string, params: Record<string, unknown>): Promise<void> {
-    if (!this.isAvailable()) {
-      return;
-    }
+    let ok = false;
     try {
-      const session = this.session();
-      try {
-        await session.run(query, params);
-      } finally {
-        await session.close();
+      await this.driver.verifyConnectivity();
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    this.lastProbe = { at: Date.now(), ok };
+    return ok;
+  }
+
+  private markDown(err: unknown): void {
+    this.lastProbe = { at: Date.now(), ok: false };
+    this.logger.warn(`Neo4j operation failed: ${(err as Error)?.message ?? err}`);
+  }
+
+  private async ensureIndexes(): Promise<void> {
+    const labels = ['Skill', 'Project', 'Goal', 'Memory', 'Document', 'Contact', 'Idea', 'Meeting'];
+    const session = this.driver!.session();
+    try {
+      await session.run('CREATE INDEX person_id IF NOT EXISTS FOR (p:Person) ON (p.id)');
+      for (const label of labels) {
+        await session.run(
+          `CREATE INDEX ${label.toLowerCase()}_owner IF NOT EXISTS FOR (n:${label}) ON (n.ownerId)`,
+        );
       }
     } catch (err) {
-      this.logger.warn(`Neo4j query failed (${(err as Error).message}) — graph sync deferred.`);
+      this.logger.warn(`Could not create graph indexes: ${(err as Error).message}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /** Run statements in one write transaction. Returns false if the graph is unavailable. */
+  private async write(statements: GraphStatement[]): Promise<boolean> {
+    if (statements.length === 0) return true;
+    if (!(await this.isAvailable())) return false;
+    const session = this.driver!.session();
+    try {
+      await session.executeWrite(async (tx) => {
+        for (const s of statements) {
+          await tx.run(s.cypher, s.params);
+        }
+      });
+      return true;
+    } catch (err) {
+      this.markDown(err);
+      return false;
+    } finally {
+      await session.close();
     }
   }
 
   /** Create or refresh the person root node. */
-  async syncPerson(personId: string, displayName: string): Promise<void> {
-    await this.run(
-      `MERGE (p:Person {id: $id}) ON CREATE SET p.label = $name, p.createdAt = datetime()
-       ON MATCH SET p.label = $name`,
-      { id: personId, name: displayName },
-    );
+  syncPerson(personId: string, displayName: string): Promise<boolean> {
+    return this.write([
+      {
+        cypher: `MERGE (p:Person {id: $person}) ON CREATE SET p.createdAt = datetime() SET p.label = $name`,
+        params: { person: personId, name: displayName },
+      },
+    ]);
   }
 
-  /** Fold one memory event into the graph based on its payload shape. */
-  async syncEvent(personId: string, event: {
-    type: string;
-    summary: string;
-    payload?: Record<string, unknown>;
-  }): Promise<void> {
-    if (!this.isAvailable()) {
-      return;
-    }
-    const p = event.payload ?? {};
-    const label = event.summary.slice(0, 120);
-
-    // Project node + WORKED_ON edge.
-    if (typeof p.project === 'string' || typeof p.projectTitle === 'string') {
-      const name = (p.project ?? p.projectTitle) as string;
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (proj:Project {name: $name})
-         MERGE (p)-[:WORKED_ON {at: datetime()}]->(proj)`,
-        { person: personId, name },
-      );
-    }
-
-    // Skill nodes + HAS_SKILL edges (level from payload or default 0.5).
-    const skills = Array.isArray(p.skills) ? (p.skills as string[]) : [];
-    for (const skill of skills) {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (s:Skill {name: $skill})
-         MERGE (p)-[r:HAS_SKILL]->(s)
-         SET r.level = COALESCE(r.level, 0.25) + 0.05, r.lastObserved = datetime()`,
-        { person: personId, skill },
-      );
-    }
-
-    // Goal node + SET edge.
-    if (typeof p.goal === 'string') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (g:Goal {title: $title})
-         MERGE (p)-[:SET]->(g)`,
-        { person: personId, title: p.goal },
-      );
-    }
-
-    // Document node + AUTHORED edge.
-    if (typeof p.documentTitle === 'string' && typeof p.documentId === 'string') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (d:Document {id: $docId})
-         ON CREATE SET d.title = $title
-         MERGE (p)-[:AUTHORED]->(d)`,
-        { person: personId, docId: p.documentId, title: p.documentTitle },
-      );
-    }
-
-    // Collaborator relationship (networking events).
-    if (typeof p.collaboratorName === 'string' && p.collaboratorName !== '') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (c:Person {name: $collab})
-         MERGE (p)-[:KNOWS]->(c)`,
-        { person: personId, collab: p.collaboratorName },
-      );
-    }
-
-    // Idea node + CREATED edge.
-    if (typeof p.idea === 'string') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (i:Idea {title: $idea})
-         MERGE (p)-[:CREATED]->(i)`,
-        { person: personId, idea: p.idea },
-      );
-    }
-
-    // Meeting node + PARTICIPATED_IN edge.
-    if (typeof p.topic === 'string') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (m:Meeting {title: $topic})
-         MERGE (p)-[:PARTICIPATED_IN]->(m)`,
-        { person: personId, topic: p.topic },
-      );
-    }
-
-    // Memory node linking this event to the person + its entities.
-    if (typeof p.memoryId === 'string') {
-      await this.run(
-        `MATCH (p:Person {id: $person})
-         MERGE (m:Memory {id: $memoryId})
-         ON CREATE SET m.title = $label
-         MERGE (p)-[:HAS_MEMORY]->(m)`,
-        { person: personId, memoryId: p.memoryId, label },
-      );
-    }
+  /** Fold one memory event into the person's graph. */
+  syncEvent(personId: string, event: GraphEventInput, personLabel?: string): Promise<boolean> {
+    return this.write(statementsForEvent(personId, event, personLabel));
   }
 
-  /**
-   * Fetch a 2-hop neighborhood around the person for the interactive galaxy.
-   * Returns an empty snapshot when the graph is unavailable so the UI can
-   * show its fallback state honestly.
-   */
-  async getGraph(personId: string, limit = 120): Promise<GraphSnapshotDto> {
-    if (!this.isAvailable()) {
-      return { nodes: [], edges: [], generatedAt: new Date().toISOString() };
+  /** Remove a document node the person owns. */
+  removeDocument(personId: string, documentId: string): Promise<boolean> {
+    return this.write([
+      {
+        cypher: `MATCH (d:Document {ownerId: $person, documentId: $doc}) DETACH DELETE d`,
+        params: { person: personId, doc: documentId },
+      },
+    ]);
+  }
+
+  /** Erase the person's entire graph (root + every owned node). */
+  async deleteAllFor(personId: string): Promise<boolean> {
+    if (!(await this.isAvailable(true))) return false;
+    return this.write([
+      {
+        cypher: `MATCH (n) WHERE n.ownerId = $person OR (n:Person AND n.id = $person) DETACH DELETE n`,
+        params: { person: personId },
+      },
+    ]);
+  }
+
+  /** The person's own graph: their root node, owned nodes and edges among them. */
+  async getGraph(personId: string, limit = 150): Promise<GraphSnapshotDto> {
+    const generatedAt = new Date().toISOString();
+    const empty = (status: GraphStatus): GraphSnapshotDto => ({
+      status,
+      nodes: [],
+      edges: [],
+      truncated: false,
+      generatedAt,
+    });
+    if (!(await this.isAvailable())) {
+      return empty('unavailable');
     }
-    const session = this.session();
+    const cap = Math.max(1, Math.min(500, Math.floor(limit)));
+    const session = this.driver!.session({ defaultAccessMode: neo4j.session.READ });
     try {
-      const result = await session.run(
-        `MATCH (p:Person {id: $person})
-         OPTIONAL MATCH (p)-[r1]-(a)
-         OPTIONAL MATCH (a)-[r2]-(b) WHERE b <> p
-         RETURN p, collect(DISTINCT a) AS aNodes,
-                collect(DISTINCT b) AS bNodes,
-                collect(DISTINCT r1) AS r1Edges,
-                collect(DISTINCT r2) AS r2Edges
+      const nodeResult = await session.run(
+        `MATCH (n)
+         WHERE (n:Person AND n.id = $person) OR n.ownerId = $person
+         RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props,
+                CASE WHEN n:Person THEN 0 ELSE 1 END AS rank
+         ORDER BY rank, coalesce(n.updatedAt, n.createdAt) DESC
          LIMIT $limit`,
-        { person: personId, limit: neo4j.int(limit) },
+        { person: personId, limit: neo4j.int(cap + 1) },
       );
+      const rows: RawNodeRow[] = nodeResult.records.map((r) => ({
+        id: r.get('id') as string,
+        labels: r.get('labels') as string[],
+        props: r.get('props') as Record<string, unknown>,
+      }));
+      const truncated = rows.length > cap;
+      const nodes = rows.slice(0, cap).map(mapNode);
+      const ids = nodes.map((n) => n.id);
 
-      const nodes = new Map<string, GraphNodeDto>();
-      const edges = new Map<string, GraphEdgeDto>();
-      const record = result.records[0];
-
-      const addNode = (node: any, fallbackType = 'Entity') => {
-        if (!node) return;
-        const id = (node.properties as any)?.id ?? node.identity.toString();
-        const type = (node.labels?.[0] as string) ?? fallbackType;
-        const label = (node.properties as any)?.label ?? (node.properties as any)?.name ?? (node.properties as any)?.title ?? id;
-        nodes.set(id, { id, type, label: String(label) });
-      };
-
-      record?.get('aNodes').forEach((n: any) => addNode(n));
-      record?.get('bNodes').forEach((n: any) => addNode(n));
-      // The person root itself.
-      const person = record?.get('p');
-      if (person) {
-        addNode(person, 'Person');
-      }
-
-      const addEdge = (rel: any, relType: string) => {
-        if (!rel) return;
-        const id = rel.identity.toString();
-        const source = (rel.start ?? rel.startNodeElementId ?? '').toString();
-        const target = (rel.end ?? rel.endNodeElementId ?? '').toString();
-        edges.set(id, { id, source, target, type: relType ?? rel.type, properties: rel.properties });
-      };
-      record?.get('r1Edges').forEach((r: any) => addEdge(r, r?.type));
-      record?.get('r2Edges').forEach((r: any) => addEdge(r, r?.type));
-
-      return {
-        nodes: [...nodes.values()],
-        edges: [...edges.values()],
-        generatedAt: new Date().toISOString(),
-      };
+      const edgeResult = await session.run(
+        `MATCH (a)-[r]->(b)
+         WHERE elementId(a) IN $ids AND elementId(b) IN $ids
+         RETURN elementId(r) AS id, elementId(a) AS source, elementId(b) AS target,
+                type(r) AS type, properties(r) AS props`,
+        { ids },
+      );
+      const edges = edgeResult.records.map((r) =>
+        mapEdge({
+          id: r.get('id') as string,
+          source: r.get('source') as string,
+          target: r.get('target') as string,
+          type: r.get('type') as string,
+          props: r.get('props') as Record<string, unknown>,
+        } satisfies RawEdgeRow),
+      );
+      return { status: 'ok', nodes, edges, truncated, generatedAt };
+    } catch (err) {
+      this.markDown(err);
+      return empty('unavailable');
     } finally {
       await session.close();
     }

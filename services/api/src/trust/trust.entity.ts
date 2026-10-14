@@ -1,28 +1,36 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 
 /**
- * Cached trust posture per identity. The authoritative computations happen in
- * the Trust Service; the API materializes them here for fast reads.
+ * What the platform actually knows about an identity's verification factors.
+ * Only measured facts are stored: there are no device or behavioural scores,
+ * because nothing in ANIMA measures device posture or behaviour.
  */
 @Entity('trust_profiles')
 export class TrustProfileEntity {
   @PrimaryColumn()
   personId: string;
 
-  @Column({ type: 'float', default: 0.5 })
-  identityScore: number;
+  /** True while the Trust Service holds face embeddings for this identity. */
+  @Column({ type: 'boolean', default: false })
+  faceEnrolled: boolean;
 
-  @Column({ type: 'float', default: 0.5 })
-  deviceScore: number;
+  /** When the person explicitly consented to biometric enrollment. */
+  @Column({ type: 'timestamptz', nullable: true })
+  faceConsentAt?: Date | null;
 
-  @Column({ type: 'float', default: 0.5 })
-  behavioralScore: number;
+  /**
+   * Similarity (1 − face distance) of the most recent successful face
+   * verification. A similarity, not a probability that the person is who they
+   * claim to be.
+   */
+  @Column({ type: 'float', nullable: true })
+  lastFaceSimilarity?: number | null;
 
   @Column({ type: 'text', array: true, default: () => `'{}'` })
   boundMethods: string[];
 
-  @Column({ type: 'text', nullable: true })
-  lastVerifiedAt?: string | null;
+  @Column({ type: 'timestamptz', nullable: true })
+  lastVerifiedAt?: Date | null;
 
   @Column({ type: 'text', nullable: true })
   lastVerificationMethod?: string | null;

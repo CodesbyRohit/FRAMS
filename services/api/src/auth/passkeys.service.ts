@@ -1,4 +1,10 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -21,25 +27,33 @@ import { PasskeyEntity } from './passkey.entity';
 
 type CredentialTransport = 'usb' | 'nfc' | 'ble' | 'internal' | 'hybrid';
 
+const CHALLENGE_TTL_SECONDS = 300;
+
 /**
- * WebAuthn passkey orchestration. Challenges live in Redis (TTL 5 min) so the
- * flow survives API restarts and multiple replicas.
+ * WebAuthn passkey orchestration. Challenges live in Redis (single use, 5 min
+ * TTL) so the flow survives API restarts and multiple replicas. User
+ * verification (biometric or device PIN on the authenticator) is required:
+ * a passkey is the sole factor, so mere possession of a security key is not
+ * enough.
  */
 @Injectable()
 export class PasskeysService {
   private readonly rpName = 'ANIMA';
   private readonly rpId: string;
-  private readonly origin: string;
+  private readonly origins: string[];
 
   constructor(
-    private readonly cfg: ConfigService,
+    cfg: ConfigService,
     @InjectRepository(PasskeyEntity)
     private readonly repo: Repository<PasskeyEntity>,
     @Inject(REDIS) private readonly redis: Redis,
   ) {
-    const webOrigin = cfg.get('ANIMA_WEB_ORIGIN', 'http://localhost:3000');
-    this.origin = webOrigin.split(',')[0];
-    this.rpId = new URL(this.origin).hostname;
+    const configured = String(cfg.get('ANIMA_WEB_ORIGIN', 'http://localhost:3000'))
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+    this.origins = configured;
+    this.rpId = cfg.get('ANIMA_WEBAUTHN_RP_ID') ?? new URL(configured[0]).hostname;
   }
 
   private challengeKey(kind: string, id: string): string {
@@ -47,17 +61,33 @@ export class PasskeysService {
   }
 
   private async storeChallenge(kind: string, id: string, challenge: string): Promise<void> {
-    await this.redis.set(this.challengeKey(kind, id), challenge, 'EX', 300);
+    try {
+      await this.redis.set(this.challengeKey(kind, id), challenge, 'EX', CHALLENGE_TTL_SECONDS);
+    } catch {
+      throw new ServiceUnavailableException('Passkey ceremonies need Redis, which is unavailable.');
+    }
   }
 
+  /** Atomically read-and-delete so a challenge can be used at most once. */
   private async takeChallenge(kind: string, id: string): Promise<string> {
-    const key = this.challengeKey(kind, id);
-    const challenge = await this.redis.get(key);
-    if (!challenge) {
-      throw new UnauthorizedException('Missing or expired WebAuthn challenge. Start again.');
+    let challenge: string | null;
+    try {
+      challenge = await this.redis.getdel(this.challengeKey(kind, id));
+    } catch {
+      throw new ServiceUnavailableException('Passkey ceremonies need Redis, which is unavailable.');
     }
-    await this.redis.del(key);
+    if (!challenge) {
+      throw new UnauthorizedException('The passkey request expired or was already used. Start again.');
+    }
     return challenge;
+  }
+
+  countFor(personId: string): Promise<number> {
+    return this.repo.count({ where: { personId } });
+  }
+
+  listFor(personId: string): Promise<PasskeyEntity[]> {
+    return this.repo.find({ where: { personId }, order: { createdAt: 'ASC' } });
   }
 
   async registrationOptions(
@@ -71,13 +101,13 @@ export class PasskeysService {
       rpID: this.rpId,
       userName: email,
       userDisplayName: displayName,
-      userID: Buffer.from(personId),
+      userID: new TextEncoder().encode(personId),
       attestationType: 'none',
       excludeCredentials: credentials.map((c) => ({
         id: c.credentialId,
         transports: c.transports as CredentialTransport[],
       })),
-      authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+      authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
       timeout: 120_000,
     });
     await this.storeChallenge('registration', personId, options.challenge);
@@ -90,13 +120,18 @@ export class PasskeysService {
     response: RegistrationResponseJSON,
   ): Promise<PasskeyEntity> {
     const expectedChallenge = await this.takeChallenge('registration', personId);
-    const verification = await verifyRegistrationResponse({
-      response,
-      expectedChallenge,
-      expectedOrigin: this.origin,
-      expectedRPID: this.rpId,
-      requireUserVerification: false,
-    });
+    let verification;
+    try {
+      verification = await verifyRegistrationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: this.origins,
+        expectedRPID: this.rpId,
+        requireUserVerification: true,
+      });
+    } catch (err) {
+      throw new UnauthorizedException(`Passkey registration was rejected: ${(err as Error).message}`);
+    }
 
     if (!verification.verified || !verification.registrationInfo) {
       throw new UnauthorizedException('Passkey registration was not verified by the authenticator.');
@@ -105,7 +140,7 @@ export class PasskeysService {
 
     const existing = await this.repo.findOne({ where: { credentialId: authCred.id } });
     if (existing) {
-      throw new UnauthorizedException('This passkey is already registered.');
+      throw new BadRequestException('This passkey is already registered.');
     }
 
     const credential = this.repo.create({
@@ -113,69 +148,88 @@ export class PasskeysService {
       personId,
       publicKey: Buffer.from(authCred.publicKey).toString('base64url'),
       counter: authCred.counter,
-      deviceName: deviceName || 'Default device',
-      transports: (response.response.transports as string[]) ?? [],
+      deviceName: deviceName.trim().slice(0, 64) || 'Passkey',
+      transports: (response.response.transports as string[] | undefined) ?? [],
     });
     return this.repo.save(credential);
   }
 
-  async authenticationOptions(email: string): Promise<PublicKeyCredentialRequestOptionsJSON> {
-    const person = await this.findPersonByEmail(email);
-    const credentials = person ? await this.repo.find({ where: { personId: person.id } }) : [];
+  /**
+   * Discoverable-credential sign-in: no email needed, the authenticator offers
+   * the passkeys it holds for this site. The challenge is keyed by a random
+   * ceremony id returned to the browser.
+   */
+  async authenticationOptions(
+    ceremonyId: string,
+  ): Promise<PublicKeyCredentialRequestOptionsJSON> {
     const options = await generateAuthenticationOptions({
       rpID: this.rpId,
-      allowCredentials: credentials.map((c) => ({
-        id: c.credentialId,
-        transports: c.transports as CredentialTransport[],
-      })),
-      userVerification: 'preferred',
+      allowCredentials: [],
+      userVerification: 'required',
       timeout: 120_000,
     });
-    await this.storeChallenge('authentication', email, options.challenge);
+    await this.storeChallenge('authentication', ceremonyId, options.challenge);
     return options;
   }
 
-  async verifyAuthentication(email: string, response: AuthenticationResponseJSON): Promise<string> {
-    const person = await this.findPersonByEmail(email);
-    if (!person) {
-      throw new UnauthorizedException('No identity matches this email.');
-    }
-    const credential = await this.repo.findOne({
-      where: { credentialId: response.id },
-    });
-    if (!credential || credential.personId !== person.id) {
-      throw new UnauthorizedException('Unknown credential for this identity.');
+  /** Verify an assertion and return the person it belongs to. */
+  async verifyAuthentication(
+    ceremonyId: string,
+    response: AuthenticationResponseJSON,
+  ): Promise<string> {
+    const expectedChallenge = await this.takeChallenge('authentication', ceremonyId);
+    const credential = await this.repo.findOne({ where: { credentialId: response.id } });
+    if (!credential) {
+      throw new UnauthorizedException('This passkey is not registered with ANIMA.');
     }
 
-    const expectedChallenge = await this.takeChallenge('authentication', email);
-    const verification = await verifyAuthenticationResponse({
-      response,
-      expectedChallenge,
-      expectedOrigin: this.origin,
-      expectedRPID: this.rpId,
-      credential: {
-        id: credential.credentialId,
-        publicKey: Buffer.from(credential.publicKey, 'base64url'),
-        counter: credential.counter,
-        transports: credential.transports as CredentialTransport[],
-      },
-      requireUserVerification: false,
-    });
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: this.origins,
+        expectedRPID: this.rpId,
+        credential: {
+          id: credential.credentialId,
+          publicKey: Buffer.from(credential.publicKey, 'base64url'),
+          counter: credential.counter,
+          transports: credential.transports as CredentialTransport[],
+        },
+        requireUserVerification: true,
+      });
+    } catch (err) {
+      throw new UnauthorizedException(`Passkey sign-in was rejected: ${(err as Error).message}`);
+    }
 
     if (!verification.verified) {
       throw new UnauthorizedException('Passkey assertion failed.');
     }
+    // The user handle, when present, must name the same identity.
+    const handle = response.response.userHandle;
+    if (handle && Buffer.from(handle, 'base64url').toString('utf8') !== credential.personId) {
+      throw new UnauthorizedException('Passkey user handle does not match its credential.');
+    }
     credential.counter = verification.authenticationInfo.newCounter;
+    credential.lastUsedAt = new Date();
     await this.repo.save(credential);
-    return person.id;
+    return credential.personId;
   }
 
-  /** Resolve email -> person id without importing the identity module (repo-local). */
-  private async findPersonByEmail(email: string): Promise<{ id: string } | null> {
-    const rows = await this.repo.query(
-      'SELECT id FROM persons WHERE lower(email) = lower($1) LIMIT 1',
-      [email.trim()],
-    );
-    return rows[0] ?? null;
+  /** Remove a passkey, refusing to remove the last one (it would lock the account). */
+  async remove(personId: string, credentialId: string): Promise<void> {
+    const credentials = await this.repo.find({ where: { personId } });
+    const target = credentials.find((c) => c.credentialId === credentialId);
+    if (!target) {
+      throw new BadRequestException('No such passkey on this account.');
+    }
+    if (credentials.length <= 1) {
+      throw new BadRequestException('You cannot remove your only passkey — add another one first.');
+    }
+    await this.repo.delete({ credentialId, personId });
+  }
+
+  async removeAllFor(personId: string): Promise<void> {
+    await this.repo.delete({ personId });
   }
 }
