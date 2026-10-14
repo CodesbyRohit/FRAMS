@@ -27,14 +27,17 @@ const strList = (v: unknown): string[] =>
 
 const ROOT = `MERGE (p:Person {id: $person}) ON CREATE SET p.label = coalesce($personLabel, 'You'), p.createdAt = datetime()`;
 
-/** Owned-node upsert + relationship from the person root. */
-function owned(label: string, keyProp: string, rel: string, extra = ''): string {
+/**
+ * Owned-node upsert + relationship from the person root. `nodeSet` may only
+ * reference `n`; `relSet` runs after the relationship is bound and may use `r`.
+ */
+function owned(label: string, keyProp: string, rel: string, nodeSet = '', relSet = ''): string {
   return `${ROOT}
      MERGE (n:${label} {ownerId: $person, ${keyProp}: $key})
        ON CREATE SET n.createdAt = datetime()
-     SET n.updatedAt = datetime() ${extra}
+     SET n.updatedAt = datetime() ${nodeSet}
      MERGE (p)-[r:${rel}]->(n)
-     SET r.lastObserved = datetime()`;
+     SET r.lastObserved = datetime() ${relSet}`;
 }
 
 export function statementsForEvent(
@@ -52,7 +55,7 @@ export function statementsForEvent(
   }
   for (const skill of strList(p.skills)) {
     out.push({
-      cypher: owned('Skill', 'name', 'HAS_SKILL', ', r.evidence = coalesce(r.evidence, 0) + 1'),
+      cypher: owned('Skill', 'name', 'HAS_SKILL', '', ', r.evidence = coalesce(r.evidence, 0) + 1'),
       params: { ...base, key: skill },
     });
   }

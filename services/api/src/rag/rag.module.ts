@@ -7,6 +7,7 @@ import { qdrantFactory, QDRANT } from './qdrant.provider';
 import { RagController } from './rag.controller';
 import { RagResolver } from './rag.resolver';
 import { RagService } from './rag.service';
+import { VectorStore } from './vector-store.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([DocumentEntity])],
@@ -14,12 +15,13 @@ import { RagService } from './rag.service';
   providers: [
     RagService,
     RagResolver,
+    VectorStore,
     {
       provide: QDRANT,
       inject: [ConfigService],
       useFactory: qdrantFactory,
     },
   ],
-  exports: [RagService, QDRANT],
+  exports: [RagService, VectorStore, QDRANT],
 })
 export class RagModule {}

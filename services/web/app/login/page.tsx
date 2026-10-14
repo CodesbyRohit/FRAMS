@@ -8,7 +8,6 @@ import { useState } from 'react';
 import { FaceCapture } from '@/components/auth/face-capture';
 import { Button } from '@/components/ui/button';
 import { setAuth } from '@/lib/auth';
-import { apolloClient } from '@/lib/apollo';
 import { LOGIN_WITH_FACE, LOGIN_WITH_PASSKEY, PASSKEY_LOGIN_OPTIONS } from '@/lib/graphql';
 import { getCredential, isWebAuthnSupported } from '@/lib/webauthn';
 
@@ -21,6 +20,7 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [passkeyLoginOptions] = useMutation(PASSKEY_LOGIN_OPTIONS);
   const [loginWithPasskey] = useMutation(LOGIN_WITH_PASSKEY);
   const [loginWithFace] = useMutation(LOGIN_WITH_FACE);
 
@@ -33,18 +33,16 @@ export default function LoginPage() {
     }
     setBusy(true);
     try {
-      const { data: optData } = await apolloClient.query({
-        query: PASSKEY_LOGIN_OPTIONS,
-        variables: { email },
-      });
-      const assertion = await getCredential(optData.passkeyLoginOptions);
+      // Discoverable credentials: the authenticator offers the passkeys it holds for this site.
+      const { data: optData } = await passkeyLoginOptions();
+      const { ceremonyId, options } = optData.passkeyLoginOptions;
+      const assertion = await getCredential(options);
       const { data } = await loginWithPasskey({
-        variables: { email, assertion: JSON.stringify(assertion) },
+        variables: { ceremonyId, assertion: JSON.stringify(assertion) },
       });
       setAuth(data.loginWithPasskey.token, {
         personId: data.loginWithPasskey.personId,
         displayName: data.loginWithPasskey.displayName,
-        email,
       });
       router.push('/app');
     } catch (err) {
@@ -54,16 +52,20 @@ export default function LoginPage() {
     }
   }
 
-  async function handleFace(dataUrl: string) {
+  async function handleFace(frames: string[]) {
     setError(null);
+    if (!email.trim()) {
+      setError('Enter the email of the identity you are signing in to.');
+      return;
+    }
     setBusy(true);
     try {
-      const { data } = await loginWithFace({
-        variables: { imageBase64: dataUrl, deviceScore: 0.7, behavioralScore: 0.6 },
-      });
+      // 1:1 against the named identity; the frame burst lets the Trust Service check for a blink.
+      const { data } = await loginWithFace({ variables: { email: email.trim(), frames } });
       setAuth(data.loginWithFace.token, {
         personId: data.loginWithFace.personId,
         displayName: data.loginWithFace.displayName,
+        email: email.trim(),
       });
       router.push('/app');
     } catch (err) {
@@ -103,14 +105,9 @@ export default function LoginPage() {
 
           {method === 'passkey' ? (
             <form onSubmit={handlePasskey} className="space-y-4">
-              <input
-                type="email"
-                className="input-dark"
-                placeholder="you@anima.ai"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
+              <p className="text-center text-xs text-slate-500">
+                Your device will offer the passkeys it holds for ANIMA.
+              </p>
               {error && (
                 <p className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-300">{error}</p>
               )}
@@ -120,12 +117,28 @@ export default function LoginPage() {
             </form>
           ) : (
             <div className="space-y-4">
-              <FaceCapture onCapture={handleFace} captureLabel={busy ? 'Verifying…' : 'Verify my face'} />
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Email of your identity</span>
+                <input
+                  type="email"
+                  className="input-dark"
+                  placeholder="you@anima.ai"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </label>
+              <FaceCapture
+                onCapture={handleFace}
+                frameCount={12}
+                captureLabel={busy ? 'Verifying…' : 'Verify my face'}
+              />
               {error && (
                 <p className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-300">{error}</p>
               )}
               <p className="text-center text-[11px] text-slate-600">
-                The image goes to the ANIMA Trust Service for verification only.
+                Frames go to the ANIMA Trust Service for a 1:1 match and blink check only. Face sign-in is
+                available only after you enroll a face from a passkey session.
               </p>
             </div>
           )}

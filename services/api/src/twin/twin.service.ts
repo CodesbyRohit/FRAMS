@@ -16,6 +16,11 @@ const EMPTY_STATS: TwinStatsRow = {
   daysActive: 0,
 };
 
+/** Stats with every counter present (rows created before a counter existed may lack it). */
+export function statsOf(twin: TwinEntity): TwinStatsRow {
+  return { ...EMPTY_STATS, ...(twin.stats ?? {}) };
+}
+
 /** Pure twin transformations — unit-testable without a database. */
 export const twinOps = {
   /** Raise a skill toward evidence, or add it. Names are matched case-insensitively. */

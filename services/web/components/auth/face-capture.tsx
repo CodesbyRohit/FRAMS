@@ -5,20 +5,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 
 interface FaceCaptureProps {
-  onCapture: (dataUrl: string) => void;
+  /** Receives `frameCount` JPEG data URLs (one for enrollment, a burst for sign-in). */
+  onCapture: (frames: string[]) => void;
   captureLabel?: string;
+  frameCount?: number;
+  /** Delay between burst frames; 12 × 150 ms ≈ 1.8 s, long enough for one blink. */
+  frameIntervalMs?: number;
 }
 
 /**
- * Browser camera capture used for face enrollment and face login. The image
- * is sent straight to the Trust Service — ANIMA itself never stores raw
- * photos, only embeddings produced by the trust layer.
+ * Browser camera capture used for face enrollment and face sign-in. Frames
+ * are sent to the API, which forwards them to the Trust Service; ANIMA never
+ * stores raw photos. Sign-in needs a short burst so a blink can be detected.
  */
-export function FaceCapture({ onCapture, captureLabel = 'Capture' }: FaceCaptureProps) {
+export function FaceCapture({
+  onCapture,
+  captureLabel = 'Capture',
+  frameCount = 1,
+  frameIntervalMs = 150,
+}: FaceCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
 
   const start = useCallback(async () => {
     setError(null);
@@ -44,31 +54,46 @@ export function FaceCapture({ onCapture, captureLabel = 'Capture' }: FaceCapture
     setActive(false);
   }, []);
 
-  const capture = useCallback(() => {
+  const capture = useCallback(async () => {
     const video = videoRef.current;
     if (!video) return;
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
-    canvas.getContext('2d')?.drawImage(video, 0, 0);
-    onCapture(canvas.toDataURL('image/jpeg', 0.9));
-  }, [onCapture]);
+    const frames: string[] = [];
+    setCapturing(true);
+    try {
+      for (let i = 0; i < frameCount; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, frameIntervalMs));
+        canvas.getContext('2d')?.drawImage(video, 0, 0);
+        // Lower quality for bursts keeps each frame well under the API's per-frame cap.
+        frames.push(canvas.toDataURL('image/jpeg', frameCount > 1 ? 0.7 : 0.9));
+      }
+    } finally {
+      setCapturing(false);
+    }
+    onCapture(frames);
+  }, [onCapture, frameCount, frameIntervalMs]);
 
   useEffect(() => () => stop(), [stop]);
 
   return (
     <div className="space-y-3">
+      {/* Always mounted so start() can attach the stream before `active` flips. */}
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        className={`aspect-[4/3] w-full rounded-xl border border-white/10 bg-ink-900 object-cover ${active ? '' : 'hidden'}`}
+      />
       {active ? (
         <>
-          <video
-            ref={videoRef}
-            muted
-            playsInline
-            className="aspect-[4/3] w-full rounded-xl border border-white/10 bg-ink-900 object-cover"
-          />
+          {frameCount > 1 && (
+            <p className="text-center text-[11px] text-slate-500">Look at the camera and blink once during capture.</p>
+          )}
           <div className="flex gap-3">
-            <Button onClick={capture} className="flex-1">
-              {captureLabel}
+            <Button onClick={capture} className="flex-1" loading={capturing}>
+              {capturing ? 'Capturing…' : captureLabel}
             </Button>
             <Button variant="ghost" onClick={stop}>
               Stop camera

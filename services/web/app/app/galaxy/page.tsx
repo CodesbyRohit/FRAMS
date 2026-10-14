@@ -37,7 +37,8 @@ export default function GalaxyPage() {
     properties: n.properties,
   }));
   const edges = data?.knowledgeGraph?.edges ?? [];
-  const available = data?.knowledgeGraphAvailable ?? false;
+  // `unavailable` means the graph backend is down — not that the graph is empty.
+  const available = data?.knowledgeGraph?.status === 'ok';
 
   const selectedProps = selected?.properties ? (() => {
     try {

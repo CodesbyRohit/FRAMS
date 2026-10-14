@@ -8,23 +8,27 @@ import { gql } from '@apollo/client';
 export const ONBOARD = gql`
   mutation Onboard($email: String!, $displayName: String!, $roles: [String!]) {
     onboard(email: $email, displayName: $displayName, roles: $roles) {
-      id
-      email
-      displayName
-      roles
+      person {
+        id
+        email
+        displayName
+        roles
+      }
+      registrationTicket
+      expiresAt
     }
   }
 `;
 
 export const PASSKEY_REGISTRATION_OPTIONS = gql`
-  query PasskeyRegistrationOptions($personId: String!) {
-    passkeyRegistrationOptions(personId: $personId)
+  query PasskeyRegistrationOptions($ticket: String!) {
+    passkeyRegistrationOptions(ticket: $ticket)
   }
 `;
 
 export const REGISTER_PASSKEY = gql`
-  mutation RegisterPasskey($personId: String!, $deviceName: String, $attestation: String!) {
-    registerPasskey(personId: $personId, deviceName: $deviceName, attestation: $attestation) {
+  mutation RegisterPasskey($ticket: String!, $deviceName: String, $attestation: String!) {
+    registerPasskey(ticket: $ticket, deviceName: $deviceName, attestation: $attestation) {
       token
       personId
       displayName
@@ -34,14 +38,17 @@ export const REGISTER_PASSKEY = gql`
 `;
 
 export const PASSKEY_LOGIN_OPTIONS = gql`
-  query PasskeyLoginOptions($email: String!) {
-    passkeyLoginOptions(email: $email)
+  mutation PasskeyLoginOptions {
+    passkeyLoginOptions {
+      ceremonyId
+      options
+    }
   }
 `;
 
 export const LOGIN_WITH_PASSKEY = gql`
-  mutation LoginWithPasskey($email: String!, $assertion: String!) {
-    loginWithPasskey(email: $email, assertion: $assertion) {
+  mutation LoginWithPasskey($ceremonyId: String!, $assertion: String!) {
+    loginWithPasskey(ceremonyId: $ceremonyId, assertion: $assertion) {
       token
       personId
       displayName
@@ -51,24 +58,30 @@ export const LOGIN_WITH_PASSKEY = gql`
 `;
 
 export const LOGIN_WITH_FACE = gql`
-  mutation LoginWithFace($imageBase64: String!, $deviceScore: Float, $behavioralScore: Float) {
-    loginWithFace(
-      imageBase64: $imageBase64
-      deviceScore: $deviceScore
-      behavioralScore: $behavioralScore
-    ) {
+  mutation LoginWithFace($email: String!, $frames: [String!]!) {
+    loginWithFace(email: $email, frames: $frames) {
       token
       personId
       displayName
-      verificationConfidence
       verificationMethod
+      faceMatchSimilarity
+      livenessPassed
     }
   }
 `;
 
+export const LOGOUT = gql`
+  mutation Logout {
+    logout
+  }
+`;
+
 export const ENROLL_FACE = gql`
-  mutation EnrollFace($imageBase64: String!) {
-    enrollFace(imageBase64: $imageBase64)
+  mutation EnrollFace($imageBase64: String!, $consent: Boolean!) {
+    enrollFace(imageBase64: $imageBase64, consent: $consent) {
+      faceEnrolled
+      faceConsentAt
+    }
   }
 `;
 
@@ -121,6 +134,8 @@ export const MY_MEMORIES = gql`
       title
       content
       importance
+      vectorIndexed
+      graphSynced
       createdAt
     }
     myMemoryEvents(limit: 30) {
@@ -135,12 +150,20 @@ export const MY_MEMORIES = gql`
 export const SEARCH_MEMORIES = gql`
   query SearchMemories($query: String!, $limit: Int) {
     searchMemories(query: $query, limit: $limit) {
-      id
-      kind
-      title
-      content
-      importance
-      createdAt
+      status
+      message
+      unindexedCount
+      items {
+        id
+        kind
+        title
+        content
+        importance
+        score
+        vectorIndexed
+        graphSynced
+        createdAt
+      }
     }
   }
 `;
@@ -182,22 +205,35 @@ export const MARK_SKILL = gql`
 `;
 
 export const ASK_COPILOT = gql`
-  query AskCopilot($message: String!) {
-    askCopilot(message: $message) {
+  query AskCopilot($message: String!, $agentId: String) {
+    askCopilot(message: $message, agentId: $agentId) {
       id
       role
       content
       agentId
+      agentName
+      routing
+      generated
+      generationNote
       toolCalls {
         tool
         args
+        status
         result
         error
+        durationMs
       }
       sources {
+        index
+        kind
         label
         snippet
+        refId
+        chunkIndex
+        score
       }
+      citedSourceIndexes
+      invalidCitations
       createdAt
     }
   }
@@ -209,6 +245,7 @@ export const AGENT_CATALOG = gql`
       id
       name
       description
+      tools
     }
   }
 `;
@@ -216,6 +253,8 @@ export const AGENT_CATALOG = gql`
 export const KNOWLEDGE_GRAPH = gql`
   query KnowledgeGraph($limit: Int) {
     knowledgeGraph(limit: $limit) {
+      status
+      truncated
       nodes {
         id
         type
@@ -230,7 +269,6 @@ export const KNOWLEDGE_GRAPH = gql`
       }
       generatedAt
     }
-    knowledgeGraphAvailable
   }
 `;
 
@@ -241,8 +279,10 @@ export const MY_INSIGHTS = gql`
       kind
       title
       body
-      confidence
+      basis
       evidence {
+        type
+        refId
         label
         detail
       }
@@ -256,12 +296,13 @@ export const MY_TRUST = gql`
   query MyTrustProfile {
     myTrustProfile {
       personId
-      identityScore
-      deviceScore
-      behavioralScore
+      faceEnrolled
+      faceConsentAt
+      lastFaceSimilarity
       boundMethods
       lastVerifiedAt
       lastVerificationMethod
+      updatedAt
     }
   }
 `;
@@ -269,12 +310,20 @@ export const MY_TRUST = gql`
 export const ASK_KNOWLEDGE = gql`
   query AskYourKnowledge($query: String!) {
     askYourKnowledge(query: $query) {
+      status
       answer
+      generated
+      generationNote
       sources {
+        index
+        documentId
         label
+        chunkIndex
         snippet
         score
       }
+      citedSourceIndexes
+      invalidCitations
       latencyMs
     }
   }

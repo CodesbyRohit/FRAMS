@@ -20,6 +20,7 @@ export default function MemoryPage() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchNote, setSearchNote] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
@@ -36,7 +37,21 @@ export default function MemoryPage() {
         query: SEARCH_MEMORIES,
         variables: { query: query.trim(), limit: 10 },
       });
-      setResults(res.searchMemories);
+      const search = res.searchMemories;
+      setResults(search.items);
+      // "Unavailable" and "nothing matched" are different answers; say which one this is.
+      const pending =
+        search.unindexedCount > 0 ? ` ${search.unindexedCount} memories are not yet searchable by meaning.` : '';
+      setSearchNote(
+        search.status !== 'ok'
+          ? `${search.message ?? 'Semantic search is unavailable.'}${pending}`
+          : search.items.length === 0
+            ? `No memories matched.${pending}`
+            : pending.trim() || null,
+      );
+    } catch (err) {
+      setResults([]);
+      setSearchNote(`Search failed: ${(err as Error).message}`);
     } finally {
       setSearching(false);
     }
@@ -58,7 +73,12 @@ export default function MemoryPage() {
         const body = await res.text();
         throw new Error(body || 'Upload failed');
       }
-      setUploadMsg(`"${file.name}" indexed into your corpus.`);
+      const doc = (await res.json()) as { status?: string; chunkCount?: number };
+      setUploadMsg(
+        doc.status === 'indexed'
+          ? `"${file.name}" indexed into your corpus (${doc.chunkCount ?? 0} chunks).`
+          : `"${file.name}" was stored but is ${doc.status ?? 'not indexed'}.`,
+      );
       refetch();
       refetchDocs();
     } catch (err) {
@@ -103,6 +123,7 @@ export default function MemoryPage() {
                 className="mt-2 text-xs text-slate-500 hover:text-slate-300"
                 onClick={() => {
                   setResults(null);
+                  setSearchNote(null);
                   setQuery('');
                 }}
               >
@@ -168,10 +189,10 @@ export default function MemoryPage() {
               <h2 className="font-semibold text-white">
                 {results ? 'Search results' : 'Memory stream'}
               </h2>
-              <Badge tone="cyan">vector-indexed</Badge>
             </div>
             <div className="mt-5 space-y-3">
-              {memories.length === 0 && (
+              {searchNote && <p className="text-sm text-amber-300/90">{searchNote}</p>}
+              {memories.length === 0 && !results && (
                 <p className="text-sm text-slate-500">
                   No memories yet. Record a skill, declare a goal, or drop a note on the left.
                 </p>
@@ -184,7 +205,10 @@ export default function MemoryPage() {
                   </div>
                   <p className="mt-1.5 text-sm leading-relaxed text-slate-400">{m.content}</p>
                   <p className="mt-2 text-[11px] text-slate-600">
-                    {new Date(m.createdAt).toLocaleDateString()} · importance {Math.round(m.importance * 100)}%
+                    {new Date(m.createdAt).toLocaleDateString()} · rule-based importance {m.importance.toFixed(2)}
+                    {typeof m.score === 'number' && ` · similarity ${m.score.toFixed(2)}`}
+                    {m.vectorIndexed === false && ' · not yet searchable by meaning'}
+                    {m.graphSynced === false && ' · not yet in graph'}
                   </p>
                 </div>
               ))}

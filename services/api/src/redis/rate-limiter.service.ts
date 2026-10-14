@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus, Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { Redis } from 'ioredis';
 
-import { REDIS } from './redis.module';
+import { REDIS } from './redis.constants';
 
 /**
  * Fixed-window rate limiter backed by Redis. Used on unauthenticated,
