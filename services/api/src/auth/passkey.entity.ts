@@ -22,9 +22,12 @@ export class PasskeyEntity {
   @Column({ type: 'text' })
   deviceName: string;
 
-  /** Base64url-encoded transports (usb, nfc, ble, internal). */
+  /** Authenticator transports reported at registration (usb, nfc, ble, internal, hybrid). */
   @Column({ type: 'text', array: true, default: () => `'{}'` })
   transports: string[];
+
+  @Column({ type: 'timestamptz', nullable: true })
+  lastUsedAt?: Date | null;
 
   @CreateDateColumn()
   createdAt: string;

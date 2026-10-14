@@ -1,5 +1,16 @@
 # ANIMA local development stack.
-# Usage:  npm run infra:up   (docker compose -f infra/docker-compose.yml up -d)
+#
+#   npm run infra:up                      # data services only: postgres, neo4j, redis, qdrant
+#   docker compose -f infra/docker-compose.yml --profile app up -d --build
+#                                         # + trust, api, web containers
+#
+# Host ports are overridable so the stack can coexist with other local
+# projects, e.g. ANIMA_POSTGRES_PORT=55432 ANIMA_REDIS_PORT=56379 npm run infra:up
+#
+# This file is for local development. Credentials below are development
+# defaults, not secrets; never reuse them in a deployed environment.
+
+name: anima
 
 services:
   postgres:
@@ -8,7 +19,7 @@ services:
       POSTGRES_USER: anima
       POSTGRES_PASSWORD: anima
       POSTGRES_DB: anima
-    ports: ["5432:5432"]
+    ports: ["${ANIMA_POSTGRES_PORT:-5432}:5432"]
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U anima"]
@@ -21,16 +32,16 @@ services:
       NEO4J_AUTH: neo4j/anima-neo4j
       NEO4J_server_memory_heap_initial__size: 256m
       NEO4J_server_memory_heap_max__size: 512m
-    ports: ["7474:7474", "7687:7687"]
+    ports: ["${ANIMA_NEO4J_HTTP_PORT:-7474}:7474", "${ANIMA_NEO4J_BOLT_PORT:-7687}:7687"]
     volumes: [neo4j_data:/data]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
       interval: 10s
-      retries: 12
+      retries: 18
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["${ANIMA_REDIS_PORT:-6379}:6379"]
     volumes: [redis_data:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -39,29 +50,39 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
-    ports: ["6333:6333", "6334:6334"]
+    ports: ["${ANIMA_QDRANT_PORT:-6333}:6333"]
     volumes: [qdrant_data:/qdrant/storage]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      # The qdrant image ships without curl/wget; probe the port with bash.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 10s
       retries: 12
 
+  # ── Application containers (opt-in: --profile app) ───────────────────────
   trust:
+    profiles: [app]
     build: { context: ../services/trust, dockerfile: Dockerfile }
     environment:
-      TRUST_SERVICE_TOKEN: anima-trust-local
+      TRUST_SERVICE_TOKEN: ${TRUST_SERVICE_TOKEN:-anima-trust-local}
       TRUST_DATA_DIR: /data
-    ports: ["8090:8090"]
+    ports: ["${ANIMA_TRUST_PORT:-8090}:8090"]
     volumes: [trust_data:/data]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=3)"]
+      interval: 10s
+      retries: 12
 
   api:
-    build: { context: ../services/api, dockerfile: Dockerfile }
+    profiles: [app]
+    # Context is the repo root: the image needs the workspace manifests and
+    # packages/shared, not just services/api.
+    build: { context: .., dockerfile: services/api/Dockerfile }
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       qdrant: { condition: service_healthy }
-      neo4j: { condition: service_started }
-      trust: { condition: service_started }
+      neo4j: { condition: service_healthy }
+      trust: { condition: service_healthy }
     environment:
       ANIMA_API_PORT: 4000
       ANIMA_JWT_SECRET: ${ANIMA_JWT_SECRET:-dev-secret-change-me-please-32chars-min}
@@ -71,20 +92,27 @@ services:
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
       TRUST_SERVICE_URL: http://trust:8090
-      TRUST_SERVICE_TOKEN: anima-trust-local
+      TRUST_SERVICE_TOKEN: ${TRUST_SERVICE_TOKEN:-anima-trust-local}
       ANIMA_LLM_BASE_URL: ${ANIMA_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       ANIMA_LLM_API_KEY: ${ANIMA_LLM_API_KEY:-}
       ANIMA_LLM_MODEL: ${ANIMA_LLM_MODEL:-gpt-4o-mini}
       ANIMA_EMBEDDING_MODEL: ${ANIMA_EMBEDDING_MODEL:-text-embedding-3-small}
       ANIMA_WEB_ORIGIN: http://localhost:3000
       NODE_ENV: production
-    ports: ["4000:4000"]
+      # No migrations exist yet; this local stack lets TypeORM create the
+      # schema. A real deployment must not set this (see docs/ROADMAP.md).
+      ANIMA_DB_SYNCHRONIZE: "true"
+    ports: ["${ANIMA_API_PORT:-4000}:4000"]
 
   web:
-    build: { context: ../services/web, dockerfile: Dockerfile }
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:4000
-    ports: ["3000:3000"]
+    profiles: [app]
+    build:
+      context: ..
+      dockerfile: services/web/Dockerfile
+      args:
+        # Inlined into the browser bundle at build time.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    ports: ["${ANIMA_WEB_PORT:-3000}:3000"]
     depends_on: [api]
 
 volumes:

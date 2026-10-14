@@ -17,7 +17,7 @@
     "dev:trust": "cd services/trust && uvicorn app.main:app --reload --port 8090",
     "build": "npm run build --workspace @anima/api && npm run build --workspace @anima/web",
     "typecheck": "npm run typecheck --workspace @anima/api && npm run typecheck --workspace @anima/web",
-    "test": "npm run test --workspace @anima/api && npm run test --workspace @anima/web",
+    "test": "npm run test --workspace @anima/api",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   }

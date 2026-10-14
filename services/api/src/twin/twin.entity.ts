@@ -63,6 +63,10 @@ export class TwinEntity {
   @Column({ type: 'jsonb', default: () => `'{}'::jsonb` })
   stats: TwinStatsRow;
 
+  /** UTC day (YYYY-MM-DD) of the most recent recorded activity; drives `stats.daysActive`. */
+  @Column({ type: 'text', nullable: true })
+  lastActiveOn?: string | null;
+
   @CreateDateColumn()
   createdAt: string;
 

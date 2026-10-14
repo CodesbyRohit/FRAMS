@@ -2,9 +2,12 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+import { RateLimiter } from './rate-limiter.service';
+
 /**
- * Global Redis client — used for session storage (auth), distributed locks,
- * and cross-instance event fan-out. Each API replica gets its own connection.
+ * Global Redis client — used for session storage (auth), WebAuthn challenges,
+ * rate limiting and the event-bus side channel. Each API replica gets its own
+ * connection.
  */
 export const REDIS = Symbol('ANIMA_REDIS');
 
@@ -20,14 +23,16 @@ export const REDIS = Symbol('ANIMA_REDIS');
           lazyConnect: false,
         });
         client.on('error', (err) => {
-          // Never crash the process on transient Redis failures.
+          // Never crash the process on transient Redis failures; requests that
+          // need Redis fail closed with a 503 instead.
           // eslint-disable-next-line no-console
           console.error('[redis] connection error:', err.message);
         });
         return client;
       },
     },
+    RateLimiter,
   ],
-  exports: [REDIS],
+  exports: [REDIS, RateLimiter],
 })
 export class RedisModule {}

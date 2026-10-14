@@ -10,18 +10,29 @@ import { GqlExecutionContext } from '@nestjs/graphql';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 
+import { SessionsService, type SessionMethod } from '../auth/sessions.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
 
 export interface AuthenticatedPerson {
   personId: string;
   email: string;
   sessionId: string;
+  /** How this session was established; sensitive operations require 'passkey'. */
+  method: SessionMethod;
+}
+
+/** Resolve the Express request for both GraphQL and REST execution contexts. */
+export function requestFrom(context: ExecutionContext): Request {
+  if (context.getType<string>() === 'graphql') {
+    return GqlExecutionContext.create(context).getContext<{ req: Request }>().req;
+  }
+  return context.switchToHttp().getRequest<Request>();
 }
 
 /**
  * Verifies the `Authorization: Bearer <jwt>` header on GraphQL and REST
- * requests, and attaches the authenticated person to the context.
- * Combined with the Trust Service, this forms ANIMA's continuous-auth chain.
+ * requests. A valid signature is not enough: the session the token names must
+ * still exist in the session store, so revocation is immediate.
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -29,6 +40,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly reflector: Reflector,
+    private readonly sessions: SessionsService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -40,28 +52,49 @@ export class JwtAuthGuard implements CanActivate {
       return true;
     }
 
-    const gql = GqlExecutionContext.create(context);
-    const req: Request =
-      gql.getContext<{ req: Request }>().req ?? context.switchToHttp().getRequest();
-
-    const token = this.extractToken(req);
+    const req = requestFrom(context);
+    const token = extractBearer(req);
     if (!token) {
       throw new UnauthorizedException('Missing bearer token.');
     }
-
-    try {
-      const payload = await this.jwt.verifyAsync<AuthenticatedPerson>(token, {
-        secret: this.config.get('ANIMA_JWT_SECRET'),
-      });
-      (req as Request & { person?: AuthenticatedPerson }).person = payload;
-      return true;
-    } catch {
-      throw new UnauthorizedException('Token expired or invalid.');
-    }
+    const person = await verifySessionToken(token, this.jwt, this.config, this.sessions);
+    (req as Request & { person?: AuthenticatedPerson }).person = person;
+    return true;
   }
+}
 
-  private extractToken(req: Request): string | undefined {
-    const [type, token] = req.headers.authorization?.split(' ') ?? [];
-    return type === 'Bearer' ? token : undefined;
+export function extractBearer(req: Request): string | undefined {
+  const [type, token] = req.headers.authorization?.split(' ') ?? [];
+  return type === 'Bearer' && token ? token : undefined;
+}
+
+/** Shared by the guard and the SSE endpoint (which cannot send headers). */
+export async function verifySessionToken(
+  token: string,
+  jwt: JwtService,
+  config: ConfigService,
+  sessions: SessionsService,
+): Promise<AuthenticatedPerson> {
+  let payload: AuthenticatedPerson;
+  try {
+    payload = await jwt.verifyAsync<AuthenticatedPerson>(token, {
+      secret: config.get('ANIMA_JWT_SECRET'),
+    });
+  } catch {
+    throw new UnauthorizedException('Token expired or invalid.');
   }
+  if (!payload?.personId || !payload.sessionId) {
+    throw new UnauthorizedException('Token expired or invalid.');
+  }
+  // Throws ServiceUnavailable (fail closed) if Redis is down.
+  const session = await sessions.get(payload.sessionId, payload.personId);
+  if (!session) {
+    throw new UnauthorizedException('This session has been signed out.');
+  }
+  return {
+    personId: payload.personId,
+    email: payload.email,
+    sessionId: payload.sessionId,
+    method: session.method,
+  };
 }

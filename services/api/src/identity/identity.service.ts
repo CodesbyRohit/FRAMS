@@ -1,12 +1,9 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 
 import { newId } from '../common/ids';
+import { KnowledgeService } from '../knowledge/knowledge.service';
 import { TwinService } from '../twin/twin.service';
 import { PersonEntity } from './person.entity';
 
@@ -22,24 +19,25 @@ export class IdentityService {
     @InjectRepository(PersonEntity)
     private readonly repo: Repository<PersonEntity>,
     private readonly twins: TwinService,
+    private readonly knowledge: KnowledgeService,
   ) {}
 
-  async onboard(input: OnboardInput): Promise<PersonEntity> {
-    const email = input.email.trim().toLowerCase();
-    const exists = await this.repo.findOne({ where: { email } });
-    if (exists) {
-      throw new ConflictException('An identity with this email already exists.');
-    }
-
-    const person = this.repo.create({
-      id: newId('person'),
-      email,
-      displayName: input.displayName.trim(),
-      roles: input.roles?.length ? input.roles : ['member'],
+  /** Create a person and their empty twin atomically. Input must already be validated. */
+  async create(input: OnboardInput): Promise<PersonEntity> {
+    const person = await this.repo.manager.transaction(async (em) => {
+      const created = em.getRepository(PersonEntity).create({
+        id: newId('person'),
+        email: input.email,
+        displayName: input.displayName,
+        roles: input.roles?.length ? input.roles : ['member'],
+      });
+      await em.getRepository(PersonEntity).save(created);
+      // Birth of the Digital Twin, in the same transaction.
+      await this.twins.createTwin(created.id, em);
+      return created;
     });
-    await this.repo.save(person);
-    // Birth of the Digital Twin.
-    await this.twins.createTwin(person.id);
+    // Graph root is availability-optional; the indexer creates it lazily too.
+    void this.knowledge.syncPerson(person.id, person.displayName);
     return person;
   }
 
@@ -55,15 +53,30 @@ export class IdentityService {
     return this.repo.findOne({ where: { email: email.trim().toLowerCase() } });
   }
 
+  /** Delete an identity that never completed registration (no credentials, no data). */
+  async removeAbandoned(personId: string): Promise<void> {
+    await this.repo.manager.transaction(async (em) => {
+      await this.twins.deleteFor(personId, em);
+      await em.getRepository(PersonEntity).delete({ id: personId });
+    });
+  }
+
   async updateProfile(
     personId: string,
-    patch: { displayName?: string; bio?: string; roles?: string[]; avatarUrl?: string },
+    patch: { displayName?: string; bio?: string; roles?: string[] },
   ): Promise<PersonEntity> {
     const person = await this.findById(personId);
-    if (patch.displayName !== undefined) person.displayName = patch.displayName.trim();
-    if (patch.bio !== undefined) person.bio = patch.bio;
+    if (patch.displayName !== undefined) person.displayName = patch.displayName;
+    if (patch.bio !== undefined) person.bio = patch.bio || null;
     if (patch.roles !== undefined) person.roles = patch.roles;
-    if (patch.avatarUrl !== undefined) person.avatarUrl = patch.avatarUrl;
-    return this.repo.save(person);
+    const saved = await this.repo.save(person);
+    if (patch.displayName !== undefined) {
+      void this.knowledge.syncPerson(saved.id, saved.displayName);
+    }
+    return saved;
+  }
+
+  async deletePerson(personId: string, manager: EntityManager): Promise<void> {
+    await manager.getRepository(PersonEntity).delete({ id: personId });
   }
 }
